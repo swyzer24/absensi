@@ -401,6 +401,7 @@ service cloud.firestore {
           );
         allow update: if isVerifiedUser() && isValidId(employeeId) && isValidEmployeePrivatePII(incoming()) &&
           incoming().updatedAt == request.time && (
+            isSuperAdmin() ||
             (isAdmin() && incoming().ownerUid == existing().ownerUid) || (
               incoming().ownerUid == request.auth.uid &&
               get(/databases/$(database)/documents/employees/$(employeeId)).data.uid == request.auth.uid
@@ -446,7 +447,7 @@ service cloud.firestore {
       allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
       allow create: if isVerifiedUser() && isValidId(requestId) && isValidLeaveRequest(incoming()) &&
         incoming().id == requestId &&
-        incoming().status == 'menunggu' &&
+        (isSuperAdmin() || incoming().status == 'menunggu') &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/branches/$(incoming().branchId)) &&
@@ -475,7 +476,7 @@ service cloud.firestore {
       allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
       allow create: if isVerifiedUser() && isValidId(requestId) && isValidOvertimeRequest(incoming()) &&
         incoming().id == requestId &&
-        incoming().status == 'menunggu' &&
+        (isSuperAdmin() || incoming().status == 'menunggu') &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/branches/$(incoming().branchId)) &&
@@ -514,7 +515,7 @@ service cloud.firestore {
         incoming().period == existing().period &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        (existing().status != 'dibayarkan' || incoming().diff(existing()).affectedKeys().hasOnly(['taxReported', 'updatedAt']));
+        (isSuperAdmin() || existing().status != 'dibayarkan' || incoming().diff(existing()).affectedKeys().hasOnly(['taxReported', 'updatedAt']));
       allow delete: if isAdmin() && isValidId(payrollId);
     }
 
@@ -525,7 +526,9 @@ service cloud.firestore {
         incoming().id == filingId &&
         incoming().syncedByUid == request.auth.uid &&
         incoming().createdAt == request.time;
-      allow update: if false;
+      allow update: if isSuperAdmin() && isValidId(filingId) && isValidTaxFiling(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt;
       allow delete: if isAdmin() && isValidId(filingId);
     }
 

@@ -65,6 +65,27 @@ import { BranchesAndSecurityModule } from './components/BranchesAndSecurityModul
 import { ReminderCenter } from './components/ReminderCenter';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { GoogleMapsProvider } from './components/GoogleMapsWrapper';
+
+function MapsQuotaBanner({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+      <span>
+        Google Maps Platform quota reached. If you are the app owner, visit{' '}
+        <a
+          href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline font-semibold text-amber-950 hover:text-amber-800"
+        >
+          maps developer site
+        </a>{' '}
+        for instructions to update your account.
+      </span>
+    </div>
+  );
+}
 
 function playReminderChime() {
   try {
@@ -143,6 +164,13 @@ export default function App() {
 
   const [activeToast, setActiveToast] = useState<{ title: string; body: string } | null>(null);
   const [lastTriggeredMinute, setLastTriggeredMinute] = useState<string>('');
+  const [mapsQuotaExceeded, setMapsQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setMapsQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
 
   const triggerReminderNotification = useCallback(
     (title: string, body: string, withSound = true) => {
@@ -615,7 +643,7 @@ export default function App() {
     },
     {
       id: 'branches',
-      label: 'Cabang & Enkripsi',
+      label: 'Cabang, Peta & Keamanan',
       mobileLabel: 'Cabang',
       icon: Building2,
     },
@@ -951,7 +979,7 @@ export default function App() {
   }
 
   const roleLabel = isSuperAdmin
-    ? 'Dasbor Super Admin'
+    ? 'Dasbor Super Admin (Akses Penuh)'
     : isAdmin
     ? 'Dasbor Admin HRD'
     : 'Portal Karyawan';
@@ -969,8 +997,10 @@ export default function App() {
 
   if (showAdminSidebar) {
     return (
-      <div className="min-h-screen bg-slate-50 text-slate-900 flex">
-        <OfflineIndicator />
+      <GoogleMapsProvider>
+        <MapsQuotaBanner visible={mapsQuotaExceeded} />
+        <div className="min-h-screen bg-slate-50 text-slate-900 flex">
+          <OfflineIndicator />
 
         {/* Desktop Left Sidebar Dashboard (Super Admin & Admin HRD) */}
         <aside className="print:hidden hidden lg:flex lg:w-64 lg:flex-col lg:justify-between lg:sticky lg:top-0 lg:h-screen border-r border-slate-200 bg-white shrink-0">
@@ -1242,6 +1272,8 @@ export default function App() {
 
             {activeSection === 'analytics' && (
               <HRDAnalyticsDashboard
+                isAdmin={isAdmin}
+                isSuperAdmin={isSuperAdmin}
                 branches={branches}
                 employees={employees}
                 attendance={attendance}
@@ -1253,6 +1285,7 @@ export default function App() {
               <PayrollAndTaxModule
                 currentUserUid={user.uid}
                 isAdmin={isAdmin}
+                isSuperAdmin={isSuperAdmin}
                 branches={branches}
                 employees={employees}
                 attendance={attendance}
@@ -1265,6 +1298,7 @@ export default function App() {
               <BranchesAndSecurityModule
                 currentUserUid={user.uid}
                 isAdmin={isAdmin}
+                isSuperAdmin={isSuperAdmin}
                 branches={branches}
                 employees={employees}
               />
@@ -1301,6 +1335,7 @@ export default function App() {
           </nav>
         </div>
       </div>
+      </GoogleMapsProvider>
     );
   }
 
@@ -1344,8 +1379,10 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <OfflineIndicator />
+    <GoogleMapsProvider>
+      <MapsQuotaBanner visible={mapsQuotaExceeded} />
+      <div className="min-h-screen bg-slate-50 text-slate-900">
+        <OfflineIndicator />
 
       {/* Compact Top Bar for Employee */}
       <header className="print:hidden sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
@@ -1508,5 +1545,6 @@ export default function App() {
         </div>
       </nav>
     </div>
+    </GoogleMapsProvider>
   );
 }

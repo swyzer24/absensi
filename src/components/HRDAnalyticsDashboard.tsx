@@ -8,23 +8,67 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Download, Eye, Search, X } from 'lucide-react';
-import type { AttendanceRecord, Branch, Employee, PayrollRun } from '../types';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Eye,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../firebase';
+import type { AttendanceRecord, AttendanceStatus, Branch, Employee, PayrollRun } from '../types';
 import {
   downloadCSV,
   formatRupiah,
   formatTimeShort,
   getCurrentPeriodString,
+  getTodayDateString,
 } from '../utils/geoAndPayroll';
 
 interface HRDAnalyticsDashboardProps {
+  isAdmin?: boolean;
+  isSuperAdmin?: boolean;
   branches: Branch[];
   employees: Employee[];
   attendance: AttendanceRecord[];
   payrollRuns: PayrollRun[];
 }
 
+function extractHHMM(isoStr?: string): string {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function combineDateAndHHMMToIso(dateStr: string, hhmm: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [hh, mm] = hhmm.split(':').map(Number);
+  const dt = new Date(y || 2026, (m || 1) - 1, d || 1, hh || 0, mm || 0, 0, 0);
+  return dt.toISOString();
+}
+
+async function computeManualHash(seed: string): Promise<string> {
+  try {
+    const buf = await window.crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(seed)
+    );
+    return Array.from(new Uint8Array(buf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return `manual_${Date.now()}_0000000000000000`;
+  }
+}
+
 export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
+  isSuperAdmin = false,
   branches,
   employees,
   attendance,
@@ -35,6 +79,26 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [previewRecord, setPreviewRecord] = useState<AttendanceRecord | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  // Super Admin Add / Edit Attendance Modal
+  const [attModalOpen, setAttModalOpen] = useState(false);
+  const [editingAtt, setEditingAtt] = useState<AttendanceRecord | null>(null);
+  const [attForm, setAttForm] = useState({
+    employeeId: '',
+    branchId: '',
+    date: getTodayDateString(),
+    clockInHHMM: '08:30',
+    clockOutHHMM: '17:30',
+    status: 'tepat_waktu' as AttendanceStatus,
+    lateMinutes: '0',
+    overtimeMinutes: '0',
+    faceVerified: true,
+    faceConfidence: '98',
+    notes: '',
+  });
+  const [savingAtt, setSavingAtt] = useState(false);
+  const [confirmDeleteAttId, setConfirmDeleteAttId] = useState<string | null>(null);
 
   const periodRecords = useMemo(() => {
     return attendance
@@ -138,6 +202,152 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
     });
   }, [employees, attendance, branches, selectedPeriod, selectedBranchId]);
 
+  const openAddAttendanceModal = () => {
+    const defaultEmp = employees[0];
+    setFeedback(null);
+    setEditingAtt(null);
+    setAttForm({
+      employeeId: defaultEmp?.id || '',
+      branchId: defaultEmp?.branchId || branches[0]?.id || '',
+      date: getTodayDateString(),
+      clockInHHMM: '08:30',
+      clockOutHHMM: '17:30',
+      status: 'tepat_waktu',
+      lateMinutes: '0',
+      overtimeMinutes: '0',
+      faceVerified: true,
+      faceConfidence: '98',
+      notes: 'Input manual oleh Super Admin',
+    });
+    setAttModalOpen(true);
+  };
+
+  const openEditAttendanceModal = (rec: AttendanceRecord) => {
+    setFeedback(null);
+    setEditingAtt(rec);
+    setAttForm({
+      employeeId: rec.employeeId,
+      branchId: rec.branchId,
+      date: rec.date,
+      clockInHHMM: extractHHMM(rec.clockInTime) || '08:30',
+      clockOutHHMM: extractHHMM(rec.clockOutTime),
+      status: rec.status,
+      lateMinutes: String(rec.lateMinutes ?? 0),
+      overtimeMinutes: String(rec.overtimeMinutes ?? 0),
+      faceVerified: rec.faceVerified,
+      faceConfidence: String(rec.faceConfidence ?? 95),
+      notes: rec.notes || '',
+    });
+    setAttModalOpen(true);
+  };
+
+  const handleSaveAttendanceModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSuperAdmin) return;
+    const emp = employees.find((item) => item.id === attForm.employeeId);
+    const branch = branches.find((b) => b.id === attForm.branchId);
+    if (!editingAtt && !emp) {
+      setFeedback({ type: 'err', text: 'Pilih karyawan terlebih dahulu.' });
+      return;
+    }
+    if (!branch) {
+      setFeedback({ type: 'err', text: 'Pilih cabang kantor yang valid.' });
+      return;
+    }
+    const clockInIso = combineDateAndHHMMToIso(attForm.date, attForm.clockInHHMM || '08:30');
+    const hasOut = Boolean(attForm.clockOutHHMM.trim());
+    const clockOutIso = hasOut ? combineDateAndHHMMToIso(attForm.date, attForm.clockOutHHMM) : '';
+    const lateMins = Math.max(0, Math.min(1440, Math.round(Number(attForm.lateMinutes) || 0)));
+    const otMins = Math.max(0, Math.min(1440, Math.round(Number(attForm.overtimeMinutes) || 0)));
+    const confidence = Math.max(0, Math.min(100, Math.round(Number(attForm.faceConfidence) || 0)));
+    const cleanNotes = attForm.notes.trim().slice(0, 240);
+
+    setSavingAtt(true);
+    setFeedback(null);
+    try {
+      if (editingAtt) {
+        await updateDoc(doc(db, 'attendance', editingAtt.id), {
+          branchId: branch.id,
+          branchName: branch.name,
+          date: attForm.date,
+          clockInTime: clockInIso,
+          clockOutTime: clockOutIso,
+          status: attForm.status,
+          lateMinutes: lateMins,
+          overtimeMinutes: otMins,
+          faceVerified: attForm.faceVerified,
+          faceConfidence: confidence,
+          notes: cleanNotes,
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Catatan absensi ${editingAtt.employeeName} (${attForm.date}) berhasil diperbarui.`,
+        });
+      } else if (emp) {
+        const attId = `att_${Date.now()}`;
+        const digest = await computeManualHash(`${attId}_${emp.id}_${attForm.date}`);
+        await setDoc(doc(db, 'attendance', attId), {
+          id: attId,
+          userId: emp.uid,
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          branchId: branch.id,
+          branchName: branch.name,
+          date: attForm.date,
+          clockInTime: clockInIso,
+          ...(hasOut
+            ? {
+                clockOutTime: clockOutIso,
+                clockOutLat: branch.latitude,
+                clockOutLng: branch.longitude,
+                clockOutDistanceMeters: 0,
+              }
+            : {}),
+          clockInLat: branch.latitude,
+          clockInLng: branch.longitude,
+          clockInDistanceMeters: 0,
+          faceVerified: attForm.faceVerified,
+          faceConfidence: confidence,
+          faceHash: digest,
+          status: attForm.status,
+          lateMinutes: lateMins,
+          overtimeMinutes: otMins,
+          notes: cleanNotes,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Absensi manual untuk ${emp.fullName} (${attForm.date}) berhasil ditambahkan.`,
+        });
+      }
+      setAttModalOpen(false);
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        editingAtt ? OperationType.UPDATE : OperationType.CREATE,
+        'attendance'
+      );
+    } finally {
+      setSavingAtt(false);
+    }
+  };
+
+  const handleDeleteAttendance = async (rec: AttendanceRecord) => {
+    if (!isSuperAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'attendance', rec.id));
+      setConfirmDeleteAttId(null);
+      setFeedback({
+        type: 'ok',
+        text: `Log absensi ${rec.employeeName} (${rec.date}) telah dihapus.`,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `attendance/${rec.id}`);
+    }
+  };
+
   const handleExportMonthlyCSV = () => {
     downloadCSV(
       `laporan-kehadiran-bulanan-${selectedPeriod}.csv`,
@@ -212,6 +422,24 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
           </button>
         </div>
       </div>
+
+      {feedback && (
+        <div
+          role="alert"
+          className={`flex items-start gap-3 rounded-xl border p-4 text-xs ${
+            feedback.type === 'ok'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : 'border-rose-200 bg-rose-50 text-rose-900'
+          }`}
+        >
+          {feedback.type === 'ok' ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          ) : (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+          )}
+          <span>{feedback.text}</span>
+        </div>
+      )}
 
       {/* 4-Column KPI Summary Strip */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -403,6 +631,16 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {isSuperAdmin && (
+              <button
+                type="button"
+                onClick={openAddAttendanceModal}
+                className="inline-flex min-h-[38px] items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Tambah Absensi Manual
+              </button>
+            )}
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
@@ -447,7 +685,7 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
                 <th className="py-2.5 px-3 font-medium">Masuk / Pulang</th>
                 <th className="py-2.5 px-3 text-right font-medium">Jarak GPS</th>
                 <th className="py-2.5 px-3 text-right font-medium">Wajah</th>
-                <th className="py-2.5 pl-3 text-right font-medium">Detail</th>
+                <th className="py-2.5 pl-3 text-right font-medium">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -467,14 +705,55 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
                     {rec.faceVerified ? `${rec.faceConfidence}%` : 'Ditolak'}
                   </td>
                   <td className="py-2.5 pl-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewRecord(rec)}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-emerald-700 cursor-pointer"
-                    >
-                      <Eye className="h-3.5 w-3.5" />
-                      Audit
-                    </button>
+                    <div className="inline-flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewRecord(rec)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-emerald-700 cursor-pointer"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        Audit
+                      </button>
+                      {isSuperAdmin && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openEditAttendanceModal(rec)}
+                            className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          >
+                            <Pencil className="h-3 w-3 text-emerald-600" />
+                            Edit
+                          </button>
+                          {confirmDeleteAttId === rec.id ? (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteAttendance(rec)}
+                                className="rounded bg-rose-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-rose-700 cursor-pointer"
+                              >
+                                Hapus
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteAttId(null)}
+                                className="rounded border border-slate-200 px-1.5 py-1 text-[11px] text-slate-600 cursor-pointer"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteAttId(rec.id)}
+                              className="inline-flex items-center justify-center rounded border border-rose-200 p-1 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                              title="Hapus log absensi"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -547,6 +826,202 @@ export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Modal Tambah / Edit Absensi (Super Admin) */}
+      {attModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingAtt
+                  ? `Edit Absensi: ${editingAtt.employeeName}`
+                  : 'Tambah Absensi Karyawan Manual'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAttModalOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveAttendanceModal} className="space-y-3 text-xs">
+              {!editingAtt && (
+                <div>
+                  <label className="block font-medium text-slate-700">Karyawan</label>
+                  <select
+                    required
+                    value={attForm.employeeId}
+                    onChange={(e) => {
+                      const emp = employees.find((item) => item.id === e.target.value);
+                      setAttForm((p) => ({
+                        ...p,
+                        employeeId: e.target.value,
+                        branchId: emp?.branchId || p.branchId,
+                      }));
+                    }}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {employees.map((emp) => (
+                      <option key={emp.id} value={emp.id}>
+                        {emp.employeeCode} — {emp.fullName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700">Cabang</label>
+                  <select
+                    required
+                    value={attForm.branchId}
+                    onChange={(e) => setAttForm((p) => ({ ...p, branchId: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.code} — {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Tanggal</label>
+                  <input
+                    type="date"
+                    required
+                    value={attForm.date}
+                    onChange={(e) => setAttForm((p) => ({ ...p, date: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Jam Masuk</label>
+                  <input
+                    type="time"
+                    required
+                    value={attForm.clockInHHMM}
+                    onChange={(e) => setAttForm((p) => ({ ...p, clockInHHMM: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Jam Pulang</label>
+                  <input
+                    type="time"
+                    value={attForm.clockOutHHMM}
+                    onChange={(e) => setAttForm((p) => ({ ...p, clockOutHHMM: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Status</label>
+                  <select
+                    value={attForm.status}
+                    onChange={(e) =>
+                      setAttForm((p) => ({ ...p, status: e.target.value as AttendanceStatus }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-2"
+                  >
+                    <option value="tepat_waktu">Tepat Waktu</option>
+                    <option value="terlambat">Terlambat</option>
+                    <option value="lembur">Lembur</option>
+                    <option value="izin">Izin</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Telat (Menit)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1440}
+                    required
+                    value={attForm.lateMinutes}
+                    onChange={(e) => setAttForm((p) => ({ ...p, lateMinutes: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2.5 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Lembur (Menit)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1440}
+                    required
+                    value={attForm.overtimeMinutes}
+                    onChange={(e) =>
+                      setAttForm((p) => ({ ...p, overtimeMinutes: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2.5 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Skor Wajah (%)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    required
+                    value={attForm.faceConfidence}
+                    onChange={(e) =>
+                      setAttForm((p) => ({ ...p, faceConfidence: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2.5 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700">Catatan Audit</label>
+                <input
+                  type="text"
+                  maxLength={240}
+                  value={attForm.notes}
+                  onChange={(e) => setAttForm((p) => ({ ...p, notes: e.target.value }))}
+                  className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={attForm.faceVerified}
+                  onChange={(e) =>
+                    setAttForm((p) => ({ ...p, faceVerified: e.target.checked }))
+                  }
+                  className="h-4 w-4 accent-emerald-600"
+                />
+                <span className="font-medium text-slate-800">Tandai Verifikasi Wajah Valid</span>
+              </label>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setAttModalOpen(false)}
+                  className="min-h-[40px] rounded-lg border border-slate-200 px-4 font-medium text-slate-700 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingAtt}
+                  className="min-h-[40px] rounded-lg bg-emerald-600 px-4 font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                >
+                  {savingAtt ? 'Menyimpan...' : 'Simpan Absensi'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

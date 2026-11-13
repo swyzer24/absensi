@@ -5,6 +5,8 @@ import {
   Clock,
   Eye,
   FileCheck2,
+  Pencil,
+  Plus,
   Search,
   Settings2,
   Shield,
@@ -16,7 +18,7 @@ import {
   X,
   AlertTriangle,
 } from 'lucide-react';
-import { deleteDoc, doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { BOOTSTRAPPED_ADMIN_EMAIL, db, handleFirestoreError, OperationType } from '../firebase';
 import type {
   AdminInvite,
@@ -25,12 +27,15 @@ import type {
   AppSettings,
   Branch,
   Employee,
+  EmployeeEncryptedPII,
   EmployeeStatus,
   LeaveRequest,
+  LeaveType,
   OvertimeRequest,
   PTKPStatus,
+  RequestStatus,
 } from '../types';
-import { encryptEmployeePII, getActiveVaultPassphrase } from '../utils/encryption';
+import { decryptEmployeePII, encryptEmployeePII, getActiveVaultPassphrase } from '../utils/encryption';
 
 interface AdminControlCenterProps {
   currentUserUid: string;
@@ -130,6 +135,69 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
     role: 'hrd_admin' as AdminRole,
   });
   const [savingAdmin, setSavingAdmin] = useState(false);
+
+  // Super Admin Edit Employee & PII modal state
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [editEmpForm, setEditEmpForm] = useState({
+    email: '',
+    employeeCode: '',
+    fullName: '',
+    department: '',
+    position: '',
+    branchId: '',
+    ptkpStatus: 'TK/0' as PTKPStatus,
+    baseSalary: '0',
+    dailyAllowance: '0',
+    status: 'aktif' as EmployeeStatus,
+    nik: '',
+    npwp: '',
+    bankName: 'BCA',
+    bankAccount: '',
+    emergencyContact: '-',
+  });
+  const [loadingEmpPii, setLoadingEmpPii] = useState(false);
+  const [savingEditEmp, setSavingEditEmp] = useState(false);
+  const [confirmDeleteEmpId, setConfirmDeleteEmpId] = useState<string | null>(null);
+
+  // Super Admin Edit Admin / Pending Invite inline state
+  const [editingAdminUid, setEditingAdminUid] = useState<string | null>(null);
+  const [editAdminForm, setEditAdminForm] = useState({ displayName: '', role: 'hrd_admin' as AdminRole });
+  const [editingInviteId, setEditingInviteId] = useState<string | null>(null);
+  const [editInviteForm, setEditInviteForm] = useState({ displayName: '', role: 'hrd_admin' as AdminRole });
+
+  // Super Admin Leave Request Add/Edit Modal
+  const [leaveModalOpen, setLeaveModalOpen] = useState(false);
+  const [editingLeaveReq, setEditingLeaveReq] = useState<LeaveRequest | null>(null);
+  const [leaveModalForm, setLeaveModalForm] = useState({
+    employeeId: '',
+    branchId: '',
+    leaveType: 'izin_pribadi' as LeaveType,
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate: new Date().toISOString().slice(0, 10),
+    totalDays: '1',
+    reason: '',
+    status: 'disetujui' as RequestStatus,
+    reviewNotes: '',
+  });
+  const [savingLeaveModal, setSavingLeaveModal] = useState(false);
+  const [confirmDeleteLeaveId, setConfirmDeleteLeaveId] = useState<string | null>(null);
+
+  // Super Admin Overtime Request Add/Edit Modal
+  const [overtimeModalOpen, setOvertimeModalOpen] = useState(false);
+  const [editingOvertimeReq, setEditingOvertimeReq] = useState<OvertimeRequest | null>(null);
+  const [overtimeModalForm, setOvertimeModalForm] = useState({
+    employeeId: '',
+    branchId: '',
+    date: new Date().toISOString().slice(0, 10),
+    startTime: '17:30',
+    endTime: '19:30',
+    durationHours: '2',
+    reason: '',
+    status: 'disetujui' as RequestStatus,
+    reviewNotes: '',
+  });
+  const [savingOvertimeModal, setSavingOvertimeModal] = useState(false);
+  const [confirmDeleteOtId, setConfirmDeleteOtId] = useState<string | null>(null);
 
   useEffect(() => {
     if (appSettings) {
@@ -381,11 +449,129 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
     }
   };
 
+  const handleOpenEditEmployee = async (emp: Employee) => {
+    setFeedback(null);
+    setEditingEmployee(emp);
+    setEditEmpForm({
+      email: emp.email || '',
+      employeeCode: emp.employeeCode,
+      fullName: emp.fullName,
+      department: emp.department,
+      position: emp.position,
+      branchId: emp.branchId,
+      ptkpStatus: emp.ptkpStatus,
+      baseSalary: String(emp.baseSalary),
+      dailyAllowance: String(emp.dailyAllowance),
+      status: emp.status,
+      nik: '',
+      npwp: '',
+      bankName: 'BCA',
+      bankAccount: '',
+      emergencyContact: '-',
+    });
+    setLoadingEmpPii(true);
+    try {
+      const piiSnap = await getDoc(doc(db, 'employees', emp.id, 'private', 'pii'));
+      if (piiSnap.exists()) {
+        const cipher = piiSnap.data() as EmployeeEncryptedPII;
+        try {
+          const plain = await decryptEmployeePII(cipher, getActiveVaultPassphrase());
+          setEditEmpForm((prev) => ({
+            ...prev,
+            nik: plain.nik || '',
+            npwp: plain.npwp || '',
+            bankName: plain.bankName || 'BCA',
+            bankAccount: plain.bankAccount || '',
+            emergencyContact: plain.emergencyContact || '-',
+          }));
+        } catch {
+          // Leave PII inputs blank if encrypted under a different custom passphrase
+        }
+      }
+    } catch {
+      // Non-fatal: admin can still edit core profile
+    } finally {
+      setLoadingEmpPii(false);
+    }
+  };
+
+  const handleSaveEditEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmployee) return;
+    const cleanEmail = editEmpForm.email.trim().toLowerCase();
+    if (cleanEmail && !/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(cleanEmail)) {
+      setFeedback({ type: 'err', text: 'Format email Google karyawan tidak valid.' });
+      return;
+    }
+    const cleanCode = editEmpForm.employeeCode
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, '');
+    if (cleanCode.length < 3) {
+      setFeedback({
+        type: 'err',
+        text: 'Kode karyawan minimal 3 karakter huruf/angka/tanda hubung.',
+      });
+      return;
+    }
+
+    setSavingEditEmp(true);
+    setFeedback(null);
+    try {
+      await updateDoc(doc(db, 'employees', editingEmployee.id), {
+        ...(cleanEmail ? { email: cleanEmail } : {}),
+        employeeCode: cleanCode,
+        fullName: editEmpForm.fullName.trim(),
+        department: editEmpForm.department.trim(),
+        position: editEmpForm.position.trim(),
+        branchId: editEmpForm.branchId || editingEmployee.branchId,
+        ptkpStatus: editEmpForm.ptkpStatus,
+        baseSalary: Math.max(0, Number(editEmpForm.baseSalary) || 0),
+        dailyAllowance: Math.max(0, Number(editEmpForm.dailyAllowance) || 0),
+        status: editEmpForm.status,
+        updatedAt: serverTimestamp(),
+      });
+
+      if (
+        editEmpForm.nik.trim() ||
+        editEmpForm.npwp.trim() ||
+        editEmpForm.bankAccount.trim()
+      ) {
+        const encrypted = await encryptEmployeePII(
+          {
+            nik: editEmpForm.nik.trim() || '3174000000000000',
+            npwp: editEmpForm.npwp.trim() || '00.000.000.0-000.000',
+            bankName: editEmpForm.bankName.trim() || 'BCA',
+            bankAccount: editEmpForm.bankAccount.trim() || '0000000000',
+            emergencyContact: editEmpForm.emergencyContact.trim() || '-',
+          },
+          editingEmployee.uid,
+          getActiveVaultPassphrase()
+        );
+        await setDoc(doc(db, 'employees', editingEmployee.id, 'private', 'pii'), {
+          ...encrypted,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      setFeedback({
+        type: 'ok',
+        text: `Data karyawan ${editEmpForm.fullName.trim()} berhasil diperbarui.`,
+      });
+      setEditingEmployee(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `employees/${editingEmployee.id}`);
+    } finally {
+      setSavingEditEmp(false);
+    }
+  };
+
   const handleDeleteEmployee = async (emp: Employee) => {
     setFeedback(null);
     try {
       await deleteDoc(doc(db, 'employees', emp.id, 'private', 'pii')).catch(() => {});
       await deleteDoc(doc(db, 'employees', emp.id));
+      setConfirmDeleteEmpId(null);
       if (mirroredEmployeeId === emp.id) {
         onStopMirror();
       }
@@ -482,6 +668,61 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
     }
   };
 
+  const handleSaveEditInvite = async (inv: AdminInvite) => {
+    if (!isSuperAdmin) return;
+    const cleanName = editInviteForm.displayName.trim();
+    if (cleanName.length < 2) {
+      setFeedback({ type: 'err', text: 'Nama lengkap admin minimal 2 karakter.' });
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'adminInvites', inv.id), {
+        displayName: cleanName,
+        role: editInviteForm.role,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingInviteId(null);
+      setFeedback({
+        type: 'ok',
+        text: `Undangan admin ${inv.email} diperbarui (${cleanName} · ${ROLE_LABELS[editInviteForm.role]}).`,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `adminInvites/${inv.id}`);
+    }
+  };
+
+  const handleSaveEditAdmin = async (adm: AdminRegistry) => {
+    if (!isSuperAdmin) return;
+    const cleanName = editAdminForm.displayName.trim();
+    if (cleanName.length < 2) {
+      setFeedback({ type: 'err', text: 'Nama admin minimal 2 karakter.' });
+      return;
+    }
+    const isMainRoot = adm.email === BOOTSTRAPPED_ADMIN_EMAIL;
+    const nextRole = isMainRoot ? 'super_admin' : editAdminForm.role;
+    try {
+      await updateDoc(doc(db, 'admins', adm.uid), {
+        displayName: cleanName,
+        role: nextRole,
+      });
+      const cleanEmail = adm.email.trim().toLowerCase();
+      if (adminInvites.some((inv) => inv.id === cleanEmail)) {
+        await updateDoc(doc(db, 'adminInvites', cleanEmail), {
+          displayName: cleanName,
+          role: nextRole,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+      setEditingAdminUid(null);
+      setFeedback({
+        type: 'ok',
+        text: `Profil admin ${cleanName} (${ROLE_LABELS[nextRole]}) berhasil diperbarui.`,
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `admins/${adm.uid}`);
+    }
+  };
+
   const handleDeleteAdmin = async (admin: AdminRegistry) => {
     if (!isSuperAdmin) return;
     if (admin.uid === currentUserUid || admin.email === BOOTSTRAPPED_ADMIN_EMAIL) {
@@ -501,6 +742,236 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, `admins/${admin.uid}`);
+    }
+  };
+
+  const openAddLeaveModal = () => {
+    const defaultEmp = employees[0];
+    const today = new Date().toISOString().slice(0, 10);
+    setEditingLeaveReq(null);
+    setLeaveModalForm({
+      employeeId: defaultEmp?.id || '',
+      branchId: defaultEmp?.branchId || branches[0]?.id || '',
+      leaveType: 'izin_pribadi',
+      startDate: today,
+      endDate: today,
+      totalDays: '1',
+      reason: '',
+      status: 'disetujui',
+      reviewNotes: 'Ditambahkan oleh Super Admin.',
+    });
+    setLeaveModalOpen(true);
+  };
+
+  const openEditLeaveModal = (req: LeaveRequest) => {
+    setEditingLeaveReq(req);
+    setLeaveModalForm({
+      employeeId: req.employeeId,
+      branchId: req.branchId,
+      leaveType: req.leaveType,
+      startDate: req.startDate,
+      endDate: req.endDate,
+      totalDays: String(req.totalDays),
+      reason: req.reason,
+      status: req.status,
+      reviewNotes: req.reviewNotes || '',
+    });
+    setLeaveModalOpen(true);
+  };
+
+  const handleSaveLeaveModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSuperAdmin) return;
+    const emp = employees.find((item) => item.id === leaveModalForm.employeeId);
+    if (!editingLeaveReq && !emp) {
+      setFeedback({ type: 'err', text: 'Pilih karyawan terlebih dahulu.' });
+      return;
+    }
+    const cleanReason = leaveModalForm.reason.trim();
+    if (cleanReason.length < 4) {
+      setFeedback({ type: 'err', text: 'Alasan izin minimal 4 karakter.' });
+      return;
+    }
+    const days = Math.max(1, Math.min(90, Math.round(Number(leaveModalForm.totalDays) || 1)));
+    setSavingLeaveModal(true);
+    setFeedback(null);
+    try {
+      if (editingLeaveReq) {
+        await updateDoc(doc(db, 'leaveRequests', editingLeaveReq.id), {
+          branchId: leaveModalForm.branchId || editingLeaveReq.branchId,
+          leaveType: leaveModalForm.leaveType,
+          startDate: leaveModalForm.startDate,
+          endDate: leaveModalForm.endDate,
+          totalDays: days,
+          reason: cleanReason.slice(0, 300),
+          status: leaveModalForm.status,
+          reviewedByName: currentUserName,
+          reviewNotes: leaveModalForm.reviewNotes.trim().slice(0, 240),
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Data izin milik ${editingLeaveReq.employeeName} berhasil diperbarui.`,
+        });
+      } else if (emp) {
+        const reqId = `leave_${Date.now()}`;
+        await setDoc(doc(db, 'leaveRequests', reqId), {
+          id: reqId,
+          userId: emp.uid,
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          branchId: leaveModalForm.branchId || emp.branchId,
+          leaveType: leaveModalForm.leaveType,
+          startDate: leaveModalForm.startDate,
+          endDate: leaveModalForm.endDate,
+          totalDays: days,
+          reason: cleanReason.slice(0, 300),
+          status: leaveModalForm.status,
+          reviewedByName: currentUserName,
+          reviewNotes: leaveModalForm.reviewNotes.trim().slice(0, 240),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Pengajuan izin baru untuk ${emp.fullName} berhasil ditambahkan.`,
+        });
+      }
+      setLeaveModalOpen(false);
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        editingLeaveReq ? OperationType.UPDATE : OperationType.CREATE,
+        'leaveRequests'
+      );
+    } finally {
+      setSavingLeaveModal(false);
+    }
+  };
+
+  const handleDeleteLeaveRequest = async (req: LeaveRequest) => {
+    if (!isSuperAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'leaveRequests', req.id));
+      setConfirmDeleteLeaveId(null);
+      setFeedback({ type: 'ok', text: `Pengajuan izin ${req.employeeName} dihapus.` });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `leaveRequests/${req.id}`);
+    }
+  };
+
+  const openAddOvertimeModal = () => {
+    const defaultEmp = employees[0];
+    const today = new Date().toISOString().slice(0, 10);
+    setEditingOvertimeReq(null);
+    setOvertimeModalForm({
+      employeeId: defaultEmp?.id || '',
+      branchId: defaultEmp?.branchId || branches[0]?.id || '',
+      date: today,
+      startTime: '17:30',
+      endTime: '19:30',
+      durationHours: '2',
+      reason: '',
+      status: 'disetujui',
+      reviewNotes: 'Ditambahkan oleh Super Admin.',
+    });
+    setOvertimeModalOpen(true);
+  };
+
+  const openEditOvertimeModal = (req: OvertimeRequest) => {
+    setEditingOvertimeReq(req);
+    setOvertimeModalForm({
+      employeeId: req.employeeId,
+      branchId: req.branchId,
+      date: req.date,
+      startTime: req.startTime,
+      endTime: req.endTime,
+      durationHours: String(req.durationHours),
+      reason: req.reason,
+      status: req.status,
+      reviewNotes: req.reviewNotes || '',
+    });
+    setOvertimeModalOpen(true);
+  };
+
+  const handleSaveOvertimeModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isSuperAdmin) return;
+    const emp = employees.find((item) => item.id === overtimeModalForm.employeeId);
+    if (!editingOvertimeReq && !emp) {
+      setFeedback({ type: 'err', text: 'Pilih karyawan terlebih dahulu.' });
+      return;
+    }
+    const cleanReason = overtimeModalForm.reason.trim();
+    if (cleanReason.length < 4) {
+      setFeedback({ type: 'err', text: 'Deskripsi pekerjaan lembur minimal 4 karakter.' });
+      return;
+    }
+    const hours = Math.max(0.5, Math.min(16, Number(overtimeModalForm.durationHours) || 1));
+    setSavingOvertimeModal(true);
+    setFeedback(null);
+    try {
+      if (editingOvertimeReq) {
+        await updateDoc(doc(db, 'overtimeRequests', editingOvertimeReq.id), {
+          branchId: overtimeModalForm.branchId || editingOvertimeReq.branchId,
+          date: overtimeModalForm.date,
+          startTime: overtimeModalForm.startTime,
+          endTime: overtimeModalForm.endTime,
+          durationHours: hours,
+          reason: cleanReason.slice(0, 300),
+          status: overtimeModalForm.status,
+          reviewedByName: currentUserName,
+          reviewNotes: overtimeModalForm.reviewNotes.trim().slice(0, 240),
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Data lembur ${editingOvertimeReq.employeeName} berhasil diperbarui.`,
+        });
+      } else if (emp) {
+        const reqId = `ot_${Date.now()}`;
+        await setDoc(doc(db, 'overtimeRequests', reqId), {
+          id: reqId,
+          userId: emp.uid,
+          employeeId: emp.id,
+          employeeName: emp.fullName,
+          branchId: overtimeModalForm.branchId || emp.branchId,
+          date: overtimeModalForm.date,
+          startTime: overtimeModalForm.startTime,
+          endTime: overtimeModalForm.endTime,
+          durationHours: hours,
+          reason: cleanReason.slice(0, 300),
+          status: overtimeModalForm.status,
+          reviewedByName: currentUserName,
+          reviewNotes: overtimeModalForm.reviewNotes.trim().slice(0, 240),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setFeedback({
+          type: 'ok',
+          text: `Lembur baru untuk ${emp.fullName} berhasil ditambahkan.`,
+        });
+      }
+      setOvertimeModalOpen(false);
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        editingOvertimeReq ? OperationType.UPDATE : OperationType.CREATE,
+        'overtimeRequests'
+      );
+    } finally {
+      setSavingOvertimeModal(false);
+    }
+  };
+
+  const handleDeleteOvertimeRequest = async (req: OvertimeRequest) => {
+    if (!isSuperAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'overtimeRequests', req.id));
+      setConfirmDeleteOtId(null);
+      setFeedback({ type: 'ok', text: `Pengajuan lembur ${req.employeeName} dihapus.` });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `overtimeRequests/${req.id}`);
     }
   };
 
@@ -897,6 +1368,15 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                           </select>
                           <button
                             type="button"
+                            onClick={() => handleOpenEditEmployee(emp)}
+                            className="inline-flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                            title="Edit profil, gaji & PII karyawan"
+                          >
+                            <Pencil className="h-3.5 w-3.5 text-emerald-600" />
+                            Edit
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => onStartMirror(emp.id)}
                             className="inline-flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
                             title="Mirroring tampilan karyawan"
@@ -904,14 +1384,33 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                             <Eye className="h-3.5 w-3.5" />
                             Mirror
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteEmployee(emp)}
-                            className="inline-flex min-h-[38px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
-                            title="Hapus pendaftaran karyawan"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                          {confirmDeleteEmpId === emp.id ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteEmployee(emp)}
+                                className="min-h-[38px] rounded-lg bg-rose-600 px-2.5 text-[11px] font-semibold text-white hover:bg-rose-700 cursor-pointer"
+                              >
+                                Hapus
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteEmpId(null)}
+                                className="min-h-[38px] rounded-lg border border-slate-200 px-2 text-[11px] text-slate-600 cursor-pointer"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteEmpId(emp.id)}
+                              className="inline-flex min-h-[38px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                              title="Hapus pendaftaran karyawan"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -1006,30 +1505,93 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                       Terdaftar — Menunggu Login Pertama ({pendingInvites.length})
                     </h3>
                     <div className="divide-y divide-amber-100 rounded-xl border border-amber-200 bg-amber-50/40">
-                      {pendingInvites.map((inv) => (
-                        <div
-                          key={inv.id}
-                          className="flex flex-col gap-2 p-3.5 sm:flex-row sm:items-center sm:justify-between"
-                        >
-                          <div>
-                            <p className="text-xs font-semibold text-slate-900">
-                              {inv.displayName} ·{' '}
-                              <span className="text-amber-800">{ROLE_LABELS[inv.role]}</span>
-                            </p>
-                            <p className="text-[11px] text-slate-600">{inv.email}</p>
+                      {pendingInvites.map((inv) => {
+                        const isEditingInv = editingInviteId === inv.id;
+                        return (
+                          <div
+                            key={inv.id}
+                            className="flex flex-col gap-2 p-3.5 sm:flex-row sm:items-center sm:justify-between"
+                          >
+                            {isEditingInv ? (
+                              <div className="flex flex-1 flex-wrap items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={editInviteForm.displayName}
+                                  onChange={(e) =>
+                                    setEditInviteForm((p) => ({ ...p, displayName: e.target.value }))
+                                  }
+                                  className="min-h-[36px] flex-1 min-w-[140px] rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900"
+                                />
+                                <select
+                                  value={editInviteForm.role}
+                                  onChange={(e) =>
+                                    setEditInviteForm((p) => ({
+                                      ...p,
+                                      role: e.target.value as AdminRole,
+                                    }))
+                                  }
+                                  className="min-h-[36px] rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-900"
+                                >
+                                  <option value="hrd_admin">Admin HRD</option>
+                                  <option value="management">Manajemen</option>
+                                  <option value="super_admin">Super Admin</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSaveEditInvite(inv)}
+                                  className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-emerald-600 px-3 text-[11px] font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Simpan
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingInviteId(null)}
+                                  className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] text-slate-600 cursor-pointer"
+                                >
+                                  Batal
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-900">
+                                    {inv.displayName} ·{' '}
+                                    <span className="text-amber-800">{ROLE_LABELS[inv.role]}</span>
+                                  </p>
+                                  <p className="text-[11px] text-slate-600">{inv.email}</p>
+                                </div>
+                                {isSuperAdmin && (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingInviteId(inv.id);
+                                        setEditInviteForm({
+                                          displayName: inv.displayName,
+                                          role: inv.role,
+                                        });
+                                      }}
+                                      className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                    >
+                                      <Pencil className="h-3 w-3 text-emerald-600" />
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCancelAdminInvite(inv)}
+                                      className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 text-[11px] font-medium text-rose-700 hover:bg-rose-50 cursor-pointer"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      Batalkan
+                                    </button>
+                                  </div>
+                                )}
+                              </>
+                            )}
                           </div>
-                          {isSuperAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => handleCancelAdminInvite(inv)}
-                              className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 text-[11px] font-medium text-rose-700 hover:bg-rose-50 cursor-pointer"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              Batalkan
-                            </button>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1056,42 +1618,106 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                     ) : (
                       admins.map((adm) => {
                         const isMainRoot = adm.email === BOOTSTRAPPED_ADMIN_EMAIL;
+                        const isEditingAdm = editingAdminUid === adm.uid;
                         return (
                           <div
                             key={adm.uid}
                             className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
                           >
-                            <div>
-                              <p className="text-xs font-semibold text-slate-900">
-                                {adm.displayName} {adm.uid === currentUserUid ? '(Anda)' : ''}
-                              </p>
-                              <p className="text-[11px] text-slate-500">{adm.email}</p>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <select
-                                disabled={!isSuperAdmin || isMainRoot}
-                                value={adm.role}
-                                onChange={(e) =>
-                                  handleUpdateAdminRole(adm, e.target.value as AdminRole)
-                                }
-                                className="min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 disabled:bg-slate-50"
-                              >
-                                <option value="super_admin">Super Admin</option>
-                                <option value="hrd_admin">Admin HRD</option>
-                                <option value="management">Manajemen</option>
-                              </select>
-                              {isSuperAdmin && !isMainRoot && adm.uid !== currentUserUid && (
+                            {isEditingAdm ? (
+                              <div className="flex flex-1 flex-wrap items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={editAdminForm.displayName}
+                                  onChange={(e) =>
+                                    setEditAdminForm((p) => ({ ...p, displayName: e.target.value }))
+                                  }
+                                  className="min-h-[38px] flex-1 min-w-[140px] rounded-lg border border-slate-300 bg-white px-2.5 text-xs text-slate-900"
+                                  placeholder="Nama lengkap admin"
+                                />
+                                <select
+                                  disabled={isMainRoot}
+                                  value={isMainRoot ? 'super_admin' : editAdminForm.role}
+                                  onChange={(e) =>
+                                    setEditAdminForm((p) => ({
+                                      ...p,
+                                      role: e.target.value as AdminRole,
+                                    }))
+                                  }
+                                  className="min-h-[38px] rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-900 disabled:bg-slate-50"
+                                >
+                                  <option value="super_admin">Super Admin</option>
+                                  <option value="hrd_admin">Admin HRD</option>
+                                  <option value="management">Manajemen</option>
+                                </select>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteAdmin(adm)}
-                                  className="inline-flex min-h-[38px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
-                                  title="Cabut akses admin"
+                                  onClick={() => void handleSaveEditAdmin(adm)}
+                                  className="inline-flex min-h-[38px] items-center gap-1 rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white hover:bg-emerald-700 cursor-pointer"
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Check className="h-3.5 w-3.5" />
+                                  Simpan
                                 </button>
-                              )}
-                            </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingAdminUid(null)}
+                                  className="min-h-[38px] rounded-lg border border-slate-200 px-2.5 text-xs text-slate-600 cursor-pointer"
+                                >
+                                  Batal
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-900">
+                                    {adm.displayName} {adm.uid === currentUserUid ? '(Anda)' : ''}
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">{adm.email}</p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <select
+                                    disabled={!isSuperAdmin || isMainRoot}
+                                    value={adm.role}
+                                    onChange={(e) =>
+                                      handleUpdateAdminRole(adm, e.target.value as AdminRole)
+                                    }
+                                    className="min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 disabled:bg-slate-50"
+                                  >
+                                    <option value="super_admin">Super Admin</option>
+                                    <option value="hrd_admin">Admin HRD</option>
+                                    <option value="management">Manajemen</option>
+                                  </select>
+                                  {isSuperAdmin && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingAdminUid(adm.uid);
+                                        setEditAdminForm({
+                                          displayName: adm.displayName,
+                                          role: adm.role,
+                                        });
+                                      }}
+                                      className="inline-flex min-h-[38px] items-center gap-1 rounded-lg border border-slate-200 px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                                      title="Edit nama atau peran admin"
+                                    >
+                                      <Pencil className="h-3.5 w-3.5 text-emerald-600" />
+                                      Edit
+                                    </button>
+                                  )}
+                                  {isSuperAdmin && !isMainRoot && adm.uid !== currentUserUid && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteAdmin(adm)}
+                                      className="inline-flex min-h-[38px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                      title="Cabut akses admin"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </>
+                            )}
                           </div>
                         );
                       })
@@ -1213,18 +1839,31 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => onStartMirror(emp.id)}
-                    className={`mt-4 inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
-                      isActiveMirror
-                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                        : 'bg-slate-900 text-white hover:bg-slate-800'
-                    }`}
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                    {isActiveMirror ? 'Buka Mirroring Aktif' : 'Mirroring Tampilan Karyawan'}
-                  </button>
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onStartMirror(emp.id)}
+                      className={`inline-flex min-h-[42px] flex-1 items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-colors cursor-pointer ${
+                        isActiveMirror
+                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                          : 'bg-slate-900 text-white hover:bg-slate-800'
+                      }`}
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      {isActiveMirror ? 'Buka Mirroring Aktif' : 'Mirroring Karyawan'}
+                    </button>
+                    {isSuperAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditEmployee(emp)}
+                        className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                        title="Edit data karyawan"
+                      >
+                        <Pencil className="h-3.5 w-3.5 text-emerald-600" />
+                        Edit
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -1261,20 +1900,42 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
               </button>
             </div>
 
-            <select
-              value={approvalStatusFilter}
-              onChange={(e) =>
-                setApprovalStatusFilter(
-                  e.target.value as 'ALL' | 'menunggu' | 'disetujui' | 'ditolak'
-                )
-              }
-              className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
-            >
-              <option value="ALL">Semua Status</option>
-              <option value="menunggu">Menunggu Persetujuan</option>
-              <option value="disetujui">Disetujui</option>
-              <option value="ditolak">Ditolak</option>
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              {isSuperAdmin && (
+                <>
+                  <button
+                    type="button"
+                    onClick={openAddLeaveModal}
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Tambah Izin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openAddOvertimeModal}
+                    className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5 text-emerald-600" />
+                    Tambah Lembur
+                  </button>
+                </>
+              )}
+              <select
+                value={approvalStatusFilter}
+                onChange={(e) =>
+                  setApprovalStatusFilter(
+                    e.target.value as 'ALL' | 'menunggu' | 'disetujui' | 'ditolak'
+                  )
+                }
+                className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-900"
+              >
+                <option value="ALL">Semua Status</option>
+                <option value="menunggu">Menunggu Persetujuan</option>
+                <option value="disetujui">Disetujui</option>
+                <option value="ditolak">Ditolak</option>
+              </select>
+            </div>
           </div>
 
           {approvalKind === 'leave' ? (
@@ -1365,14 +2026,54 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                             </button>
                           </>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => onStartMirror(req.employeeId)}
-                          className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                          Mirror
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {isSuperAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => openEditLeaveModal(req)}
+                              className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-emerald-600" />
+                              Edit
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onStartMirror(req.employeeId)}
+                            className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            Mirror
+                          </button>
+                          {isSuperAdmin &&
+                            (confirmDeleteLeaveId === req.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDeleteLeaveRequest(req)}
+                                  className="min-h-[40px] rounded-lg bg-rose-600 px-2.5 text-xs font-semibold text-white hover:bg-rose-700 cursor-pointer"
+                                >
+                                  Hapus
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteLeaveId(null)}
+                                  className="min-h-[40px] rounded-lg border border-slate-200 px-2 text-xs text-slate-600 cursor-pointer"
+                                >
+                                  Batal
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteLeaveId(req.id)}
+                                className="inline-flex min-h-[40px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                title="Hapus pengajuan izin"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            ))}
+                        </div>
                       </div>
                     </div>
                   );
@@ -1467,14 +2168,54 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
                           </button>
                         </>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => onStartMirror(req.employeeId)}
-                        className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                        Mirror
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {isSuperAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => openEditOvertimeModal(req)}
+                            className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                          >
+                            <Pencil className="h-3.5 w-3.5 text-emerald-600" />
+                            Edit
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onStartMirror(req.employeeId)}
+                          className="inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          Mirror
+                        </button>
+                        {isSuperAdmin &&
+                          (confirmDeleteOtId === req.id ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteOvertimeRequest(req)}
+                                className="min-h-[40px] rounded-lg bg-rose-600 px-2.5 text-xs font-semibold text-white hover:bg-rose-700 cursor-pointer"
+                              >
+                                Hapus
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteOtId(null)}
+                                className="min-h-[40px] rounded-lg border border-slate-200 px-2 text-xs text-slate-600 cursor-pointer"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteOtId(req.id)}
+                              className="inline-flex min-h-[40px] items-center justify-center rounded-lg border border-rose-200 px-2.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                              title="Hapus pengajuan lembur"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          ))}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1670,6 +2411,617 @@ export const AdminControlCenter: React.FC<AdminControlCenterProps> = ({
         </section>
       )}
 
+      {/* Modal Edit Karyawan & Enkripsi PII */}
+      {editingEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold text-emerald-700">
+                  Akses Edit Karyawan & Brankas PII
+                </p>
+                <h3 className="text-base font-bold text-slate-900">
+                  Edit Data: {editingEmployee.fullName}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingEmployee(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditEmployee} className="space-y-3 text-xs">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Email Google Login</label>
+                  <input
+                    type="email"
+                    required
+                    value={editEmpForm.email}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, email: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Kode Karyawan</label>
+                  <input
+                    type="text"
+                    required
+                    value={editEmpForm.employeeCode}
+                    onChange={(e) =>
+                      setEditEmpForm((p) => ({ ...p, employeeCode: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 font-mono uppercase text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Nama Lengkap</label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    value={editEmpForm.fullName}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, fullName: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Status Kepegawaian</label>
+                  <select
+                    value={editEmpForm.status}
+                    onChange={(e) =>
+                      setEditEmpForm((p) => ({ ...p, status: e.target.value as EmployeeStatus }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    <option value="aktif">Aktif</option>
+                    <option value="cuti">Cuti</option>
+                    <option value="nonaktif">Nonaktif</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Cabang Tugas</label>
+                  <select
+                    value={editEmpForm.branchId}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, branchId: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.code} — {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Status PTKP</label>
+                  <select
+                    value={editEmpForm.ptkpStatus}
+                    onChange={(e) =>
+                      setEditEmpForm((p) => ({ ...p, ptkpStatus: e.target.value as PTKPStatus }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {(['TK/0', 'TK/1', 'K/0', 'K/1', 'K/2', 'K/3'] as PTKPStatus[]).map((ptkp) => (
+                      <option key={ptkp} value={ptkp}>
+                        {ptkp}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Divisi / Departemen</label>
+                  <input
+                    type="text"
+                    required
+                    value={editEmpForm.department}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, department: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Jabatan</label>
+                  <input
+                    type="text"
+                    required
+                    value={editEmpForm.position}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, position: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Gaji Pokok (IDR)</label>
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    value={editEmpForm.baseSalary}
+                    onChange={(e) => setEditEmpForm((p) => ({ ...p, baseSalary: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 font-mono text-slate-900"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Tunjangan Harian (IDR)</label>
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    value={editEmpForm.dailyAllowance}
+                    onChange={(e) =>
+                      setEditEmpForm((p) => ({ ...p, dailyAllowance: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 font-mono text-slate-900"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-3">
+                <p className="font-semibold text-slate-800">
+                  Data Pribadi Terenkripsi AES-256-GCM {loadingEmpPii ? '(Memuat...)' : '(Opsional)'}
+                </p>
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <div>
+                    <label className="block font-medium text-slate-700">NIK</label>
+                    <input
+                      type="text"
+                      value={editEmpForm.nik}
+                      onChange={(e) => setEditEmpForm((p) => ({ ...p, nik: e.target.value }))}
+                      placeholder="Kosongkan jika tidak diubah"
+                      className="mt-1 w-full min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700">NPWP</label>
+                    <input
+                      type="text"
+                      value={editEmpForm.npwp}
+                      onChange={(e) => setEditEmpForm((p) => ({ ...p, npwp: e.target.value }))}
+                      placeholder="09.254..."
+                      className="mt-1 w-full min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700">Bank & Rekening</label>
+                    <div className="mt-1 flex gap-1.5">
+                      <input
+                        type="text"
+                        value={editEmpForm.bankName}
+                        onChange={(e) =>
+                          setEditEmpForm((p) => ({ ...p, bankName: e.target.value }))
+                        }
+                        placeholder="BCA"
+                        className="w-20 min-h-[38px] rounded-lg border border-slate-200 bg-white px-2"
+                      />
+                      <input
+                        type="text"
+                        value={editEmpForm.bankAccount}
+                        onChange={(e) =>
+                          setEditEmpForm((p) => ({ ...p, bankAccount: e.target.value }))
+                        }
+                        placeholder="No. Rekening"
+                        className="flex-1 min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5 font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700">Kontak Darurat</label>
+                    <input
+                      type="text"
+                      value={editEmpForm.emergencyContact}
+                      onChange={(e) =>
+                        setEditEmpForm((p) => ({ ...p, emergencyContact: e.target.value }))
+                      }
+                      className="mt-1 w-full min-h-[38px] rounded-lg border border-slate-200 bg-white px-2.5"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingEmployee(null)}
+                  className="min-h-[42px] rounded-lg border border-slate-200 px-4 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingEditEmp}
+                  className="min-h-[42px] rounded-lg bg-emerald-600 px-5 text-xs font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                >
+                  {savingEditEmp ? 'Menyimpan...' : 'Simpan Perubahan Karyawan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tambah / Edit Izin & Cuti (Super Admin) */}
+      {leaveModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingLeaveReq ? `Edit Izin: ${editingLeaveReq.employeeName}` : 'Tambah Izin / Cuti Karyawan'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setLeaveModalOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveLeaveModal} className="space-y-3 text-xs">
+              {!editingLeaveReq && (
+                <div>
+                  <label className="block font-medium text-slate-700">Karyawan</label>
+                  <select
+                    required
+                    value={leaveModalForm.employeeId}
+                    onChange={(e) => {
+                      const emp = employees.find((item) => item.id === e.target.value);
+                      setLeaveModalForm((p) => ({
+                        ...p,
+                        employeeId: e.target.value,
+                        branchId: emp?.branchId || p.branchId,
+                      }));
+                    }}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {employees.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.employeeCode} — {e.fullName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700">Jenis Izin</label>
+                  <select
+                    value={leaveModalForm.leaveType}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({ ...p, leaveType: e.target.value as LeaveType }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    <option value="izin_sakit">Izin Sakit</option>
+                    <option value="izin_pribadi">Izin Pribadi</option>
+                    <option value="cuti_tahunan">Cuti Tahunan</option>
+                    <option value="dinas_luar">Dinas Luar</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Cabang</label>
+                  <select
+                    value={leaveModalForm.branchId}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({ ...p, branchId: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.code} — {b.city}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Mulai</label>
+                  <input
+                    type="date"
+                    required
+                    value={leaveModalForm.startDate}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({ ...p, startDate: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Selesai</label>
+                  <input
+                    type="date"
+                    required
+                    value={leaveModalForm.endDate}
+                    onChange={(e) => setLeaveModalForm((p) => ({ ...p, endDate: e.target.value }))}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Jumlah Hari</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={90}
+                    required
+                    value={leaveModalForm.totalDays}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({ ...p, totalDays: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700">Alasan / Keterangan</label>
+                <input
+                  type="text"
+                  required
+                  minLength={4}
+                  maxLength={300}
+                  value={leaveModalForm.reason}
+                  onChange={(e) => setLeaveModalForm((p) => ({ ...p, reason: e.target.value }))}
+                  placeholder="Contoh: Cuti tahunan keluarga / Surat dokter"
+                  className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700">Status</label>
+                  <select
+                    value={leaveModalForm.status}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({
+                        ...p,
+                        status: e.target.value as RequestStatus,
+                      }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3"
+                  >
+                    <option value="menunggu">Menunggu</option>
+                    <option value="disetujui">Disetujui</option>
+                    <option value="ditolak">Ditolak</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Catatan Admin</label>
+                  <input
+                    type="text"
+                    maxLength={240}
+                    value={leaveModalForm.reviewNotes}
+                    onChange={(e) =>
+                      setLeaveModalForm((p) => ({ ...p, reviewNotes: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setLeaveModalOpen(false)}
+                  className="min-h-[40px] rounded-lg border border-slate-200 px-4 font-medium text-slate-700 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingLeaveModal}
+                  className="min-h-[40px] rounded-lg bg-emerald-600 px-4 font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                >
+                  {savingLeaveModal ? 'Menyimpan...' : 'Simpan Pengajuan Izin'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tambah / Edit Lembur (Super Admin) */}
+      {overtimeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingOvertimeReq
+                  ? `Edit Lembur: ${editingOvertimeReq.employeeName}`
+                  : 'Tambah Pengajuan Lembur Karyawan'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setOvertimeModalOpen(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveOvertimeModal} className="space-y-3 text-xs">
+              {!editingOvertimeReq && (
+                <div>
+                  <label className="block font-medium text-slate-700">Karyawan</label>
+                  <select
+                    required
+                    value={overtimeModalForm.employeeId}
+                    onChange={(e) => {
+                      const emp = employees.find((item) => item.id === e.target.value);
+                      setOvertimeModalForm((p) => ({
+                        ...p,
+                        employeeId: e.target.value,
+                        branchId: emp?.branchId || p.branchId,
+                      }));
+                    }}
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {employees.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.employeeCode} — {e.fullName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700">Tanggal Lembur</label>
+                  <input
+                    type="date"
+                    required
+                    value={overtimeModalForm.date}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, date: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Cabang</label>
+                  <select
+                    value={overtimeModalForm.branchId}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, branchId: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 text-slate-900"
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.code} — {b.city}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700">Jam Mulai</label>
+                  <input
+                    type="time"
+                    required
+                    value={overtimeModalForm.startTime}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, startTime: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Jam Selesai</label>
+                  <input
+                    type="time"
+                    required
+                    value={overtimeModalForm.endTime}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, endTime: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Durasi (Jam)</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min={0.5}
+                    max={16}
+                    required
+                    value={overtimeModalForm.durationHours}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, durationHours: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-2 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-medium text-slate-700">Pekerjaan Lembur</label>
+                <input
+                  type="text"
+                  required
+                  minLength={4}
+                  maxLength={300}
+                  value={overtimeModalForm.reason}
+                  onChange={(e) =>
+                    setOvertimeModalForm((p) => ({ ...p, reason: e.target.value }))
+                  }
+                  placeholder="Contoh: Tutup buku bulanan & rekonsiliasi stok"
+                  className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700">Status</label>
+                  <select
+                    value={overtimeModalForm.status}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({
+                        ...p,
+                        status: e.target.value as RequestStatus,
+                      }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 bg-white px-3"
+                  >
+                    <option value="menunggu">Menunggu</option>
+                    <option value="disetujui">Disetujui</option>
+                    <option value="ditolak">Ditolak</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700">Catatan Admin</label>
+                  <input
+                    type="text"
+                    maxLength={240}
+                    value={overtimeModalForm.reviewNotes}
+                    onChange={(e) =>
+                      setOvertimeModalForm((p) => ({ ...p, reviewNotes: e.target.value }))
+                    }
+                    className="mt-1 w-full min-h-[40px] rounded-lg border border-slate-200 px-3"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setOvertimeModalOpen(false)}
+                  className="min-h-[40px] rounded-lg border border-slate-200 px-4 font-medium text-slate-700 cursor-pointer"
+                >
+                  Batal
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingOvertimeModal}
+                  className="min-h-[40px] rounded-lg bg-emerald-600 px-4 font-semibold text-white hover:bg-emerald-700 cursor-pointer"
+                >
+                  {savingOvertimeModal ? 'Menyimpan...' : 'Simpan Pengajuan Lembur'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

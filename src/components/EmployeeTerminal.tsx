@@ -60,6 +60,7 @@ import {
   getCurrentPeriodString,
   getTodayDateString,
 } from '../utils/geoAndPayroll';
+import { EmployeeAttendanceMap } from './EmployeeAttendanceMap';
 
 interface EmployeeTerminalProps {
   currentUserUid: string;
@@ -1025,6 +1026,12 @@ export const EmployeeTerminal: React.FC<EmployeeTerminalProps> = ({
                   Radius Geofence {assignedBranch?.radiusMeters ?? 250}m · Toleransi Telat{' '}
                   {lateTolerance} menit
                 </p>
+                {assignedBranch && (
+                  <p className="mt-0.5 font-mono text-[10px] text-slate-400 tabular-nums">
+                    Google Maps: {assignedBranch.latitude.toFixed(5)},{' '}
+                    {assignedBranch.longitude.toFixed(5)}
+                  </p>
+                )}
               </div>
             </div>
             <button
@@ -1037,10 +1044,10 @@ export const EmployeeTerminal: React.FC<EmployeeTerminalProps> = ({
             >
               <MapPin className="h-3.5 w-3.5" />
               {!todayRecord
-                ? 'Mulai Absen Masuk'
+                ? 'Buka Peta & Absen Masuk'
                 : !todayRecord.clockOutTime
-                ? 'Catat Absen Pulang'
-                : 'Lihat Absensi'}
+                ? 'Buka Peta & Absen Pulang'
+                : 'Lihat Peta & Absensi'}
             </button>
           </section>
 
@@ -1453,6 +1460,15 @@ export const EmployeeTerminal: React.FC<EmployeeTerminalProps> = ({
                   ))}
                 </select>
               </div>
+
+              {/* Google Maps Live Geofence & Employee GPS View */}
+              <EmployeeAttendanceMap
+                branch={activeBranch}
+                gpsLat={gpsState.lat}
+                gpsLng={gpsState.lng}
+                distanceMeters={distanceMeters}
+                withinGeofence={withinGeofence}
+              />
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-2.5">
                 <div className="flex items-center justify-between text-xs">
