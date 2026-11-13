@@ -1,0 +1,307 @@
+{
+  "entities": {
+    "AdminRegistry": {
+      "title": "AdminRegistry",
+      "description": "Daftar pengguna dengan hak akses Super Admin, Admin HRD, dan Manajemen.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 120 },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["super_admin", "hrd_admin", "management"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt"]
+    },
+    "AdminInvite": {
+      "title": "AdminInvite",
+      "description": "Undangan pendaftaran akun Super Admin, Admin HRD, dan Manajemen berdasarkan email sebelum login pertama.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "format": "email", "minLength": 5, "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 120 },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["super_admin", "hrd_admin", "management"] },
+        "status": { "type": "string", "enum": ["pending", "claimed"] },
+        "claimedUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "displayName", "role", "status", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Konfigurasi kontrol global aplikasi oleh Super Admin dan Admin HRD.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "companyName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "requireFaceVerification": { "type": "boolean" },
+        "requireGpsGeofence": { "type": "boolean" },
+        "allowEmployeeSelfService": { "type": "boolean" },
+        "lateToleranceMinutes": { "type": "number" },
+        "maxOvertimeHoursPerMonth": { "type": "number" },
+        "maintenanceMode": { "type": "boolean" },
+        "announcementBanner": { "type": "string", "maxLength": 240 },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyName", "requireFaceVerification", "requireGpsGeofence", "allowEmployeeSelfService", "lateToleranceMinutes", "maxOvertimeHoursPerMonth", "maintenanceMode", "announcementBanner", "updatedByUid", "updatedAt"]
+    },
+    "Branch": {
+      "title": "Branch",
+      "description": "Kantor cabang perusahaan beserta koordinat GPS geofencing dan jadwal kerja.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "code": { "type": "string", "minLength": 2, "maxLength": 24, "pattern": "^[A-Z0-9_\\-]+$" },
+        "city": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "address": { "type": "string", "minLength": 5, "maxLength": 240 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "radiusMeters": { "type": "number" },
+        "shiftStart": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "shiftEnd": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "code", "city", "address", "latitude", "longitude", "radiusMeters", "shiftStart", "shiftEnd", "active", "createdAt", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Data operasional non-PII karyawan lintas cabang.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 120 },
+        "employeeCode": { "type": "string", "minLength": 3, "maxLength": 32, "pattern": "^[A-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "department": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "position": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ptkpStatus": { "type": "string", "enum": ["TK/0", "TK/1", "K/0", "K/1", "K/2", "K/3"] },
+        "baseSalary": { "type": "number" },
+        "dailyAllowance": { "type": "number" },
+        "avatarUrl": { "type": "string", "maxLength": 512 },
+        "status": { "type": "string", "enum": ["aktif", "cuti", "nonaktif"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "uid", "employeeCode", "fullName", "department", "position", "branchId", "ptkpStatus", "baseSalary", "dailyAllowance", "status", "createdAt", "updatedAt"]
+    },
+    "EmployeePrivatePII": {
+      "title": "EmployeePrivatePII",
+      "description": "Data sensitif karyawan terenkripsi AES-256-GCM (NIK, NPWP, Rekening Bank).",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "algorithm": { "type": "string", "enum": ["AES-256-GCM"] },
+        "ciphertext": { "type": "string", "minLength": 8, "maxLength": 8192 },
+        "iv": { "type": "string", "minLength": 8, "maxLength": 128 },
+        "keyFingerprint": { "type": "string", "minLength": 6, "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "algorithm", "ciphertext", "iv", "keyFingerprint", "updatedAt"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Catatan absensi real-time karyawan dengan validasi GPS geofencing dan verifikasi foto wajah.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "branchName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "clockInTime": { "type": "string", "minLength": 10, "maxLength": 40 },
+        "clockOutTime": { "type": "string", "maxLength": 40 },
+        "clockInLat": { "type": "number" },
+        "clockInLng": { "type": "number" },
+        "clockInDistanceMeters": { "type": "number" },
+        "clockOutLat": { "type": "number" },
+        "clockOutLng": { "type": "number" },
+        "clockOutDistanceMeters": { "type": "number" },
+        "faceVerified": { "type": "boolean" },
+        "faceConfidence": { "type": "number" },
+        "faceHash": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "faceThumbnail": { "type": "string", "maxLength": 65000 },
+        "status": { "type": "string", "enum": ["tepat_waktu", "terlambat", "lembur", "izin"] },
+        "lateMinutes": { "type": "number" },
+        "overtimeMinutes": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "employeeId", "employeeName", "branchId", "branchName", "date", "clockInTime", "clockInLat", "clockInLng", "clockInDistanceMeters", "faceVerified", "faceConfidence", "faceHash", "status", "lateMinutes", "overtimeMinutes", "createdAt", "updatedAt"]
+    },
+    "LeaveRequest": {
+      "title": "LeaveRequest",
+      "description": "Pengajuan izin, sakit, cuti tahunan, atau dinas luar oleh karyawan dengan persetujuan HRD.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "leaveType": { "type": "string", "enum": ["izin_sakit", "izin_pribadi", "cuti_tahunan", "dinas_luar"] },
+        "startDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "endDate": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "totalDays": { "type": "number" },
+        "reason": { "type": "string", "minLength": 4, "maxLength": 300 },
+        "status": { "type": "string", "enum": ["menunggu", "disetujui", "ditolak"] },
+        "reviewedByName": { "type": "string", "maxLength": 100 },
+        "reviewNotes": { "type": "string", "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "employeeId", "employeeName", "branchId", "leaveType", "startDate", "endDate", "totalDays", "reason", "status", "createdAt", "updatedAt"]
+    },
+    "OvertimeRequest": {
+      "title": "OvertimeRequest",
+      "description": "Pengajuan lembur terencana oleh karyawan dengan persetujuan HRD.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "startTime": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "endTime": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "durationHours": { "type": "number" },
+        "reason": { "type": "string", "minLength": 4, "maxLength": 300 },
+        "status": { "type": "string", "enum": ["menunggu", "disetujui", "ditolak"] },
+        "reviewedByName": { "type": "string", "maxLength": 100 },
+        "reviewNotes": { "type": "string", "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "employeeId", "employeeName", "branchId", "date", "startTime", "endTime", "durationHours", "reason", "status", "createdAt", "updatedAt"]
+    },
+    "PayrollRun": {
+      "title": "PayrollRun",
+      "description": "Rekapitulasi penggajian bulanan otomatis tersinkron dengan absensi dan perhitungan PPh 21 TER.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "period": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^\\d{4}-\\d{2}$" },
+        "employeeId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "employeeName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "presentDays": { "type": "number" },
+        "lateMinutesTotal": { "type": "number" },
+        "overtimeHours": { "type": "number" },
+        "baseSalary": { "type": "number" },
+        "allowances": { "type": "number" },
+        "overtimePay": { "type": "number" },
+        "lateDeduction": { "type": "number" },
+        "bpjsDeduction": { "type": "number" },
+        "grossIncome": { "type": "number" },
+        "pph21Rate": { "type": "number" },
+        "pph21Amount": { "type": "number" },
+        "netSalary": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "disetujui", "dibayarkan"] },
+        "taxReported": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "period", "employeeId", "employeeName", "userId", "branchId", "presentDays", "lateMinutesTotal", "overtimeHours", "baseSalary", "allowances", "overtimePay", "lateDeduction", "bpjsDeduction", "grossIncome", "pph21Rate", "pph21Amount", "netSalary", "status", "taxReported", "createdAt", "updatedAt"]
+    },
+    "TaxFiling": {
+      "title": "TaxFiling",
+      "description": "Log integrasi API pihak ketiga untuk pelaporan pajak PPh 21 e-Bupot otomatis.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "period": { "type": "string", "minLength": 7, "maxLength": 7, "pattern": "^\\d{4}-\\d{2}$" },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "provider": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "totalEmployees": { "type": "number" },
+        "totalGrossIncome": { "type": "number" },
+        "totalPph21": { "type": "number" },
+        "receiptNumber": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "payloadSignature": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "status": { "type": "string", "enum": ["terkirim", "tervalidasi", "gagal"] },
+        "syncedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "period", "branchId", "provider", "totalEmployees", "totalGrossIncome", "totalPph21", "receiptNumber", "payloadSignature", "status", "syncedByUid", "createdAt"]
+    },
+    "ReminderSchedule": {
+      "title": "ReminderSchedule",
+      "description": "Preferensi notifikasi pengingat jadwal masuk dan pulang kantor per pengguna.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "branchId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "shiftStart": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "shiftEnd": { "type": "string", "minLength": 5, "maxLength": 5, "pattern": "^\\d{2}:\\d{2}$" },
+        "remindBeforeMinutes": { "type": "number" },
+        "browserNotifyEnabled": { "type": "boolean" },
+        "soundEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "branchId", "shiftStart", "shiftEnd", "remindBeforeMinutes", "browserNotifyEnabled", "soundEnabled", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRegistry" },
+      "description": "Koleksi Super Admin, Admin HRD & Manajemen."
+    },
+    "/adminInvites/{inviteEmail}": {
+      "schema": { "$ref": "#/entities/AdminInvite" },
+      "description": "Daftar pendaftaran Admin HRD / Super Admin yang didaftarkan terlebih dahulu via email."
+    },
+    "/appSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Pengaturan kontrol global aplikasi."
+    },
+    "/branches/{branchId}": {
+      "schema": { "$ref": "#/entities/Branch" },
+      "description": "Data cabang perusahaan dengan geofence GPS."
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Direktori karyawan operasional."
+    },
+    "/employees/{employeeId}/private/pii": {
+      "schema": { "$ref": "#/entities/EmployeePrivatePII" },
+      "description": "Data PII karyawan terenkripsi AES-256-GCM."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Log absensi real-time lintas cabang."
+    },
+    "/leaveRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/LeaveRequest" },
+      "description": "Pengajuan izin & cuti karyawan."
+    },
+    "/overtimeRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/OvertimeRequest" },
+      "description": "Pengajuan lembur karyawan."
+    },
+    "/payrollRuns/{payrollId}": {
+      "schema": { "$ref": "#/entities/PayrollRun" },
+      "description": "Rekapitulasi penggajian bulanan."
+    },
+    "/taxFilings/{filingId}": {
+      "schema": { "$ref": "#/entities/TaxFiling" },
+      "description": "Riwayat pelaporan pajak PPh 21 ke API pihak ketiga."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/ReminderSchedule" },
+      "description": "Preferensi notifikasi pengingat jadwal kerja."
+    }
+  }
+}

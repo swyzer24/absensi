@@ -1,0 +1,6 @@
+{
+  "name": "Presensia Cloud",
+  "description": "Platform absensi digital real-time berbasis GPS & validasi wajah yang terintegrasi dengan penggajian, enkripsi AES-256, analitik HRD, dan pelaporan pajak PPh 21 otomatis.",
+  "requestFramePermissions": ["camera", "geolocation", "notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

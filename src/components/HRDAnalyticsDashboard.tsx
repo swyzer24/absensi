@@ -1,0 +1,555 @@
+import React, { useMemo, useState } from 'react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { Download, Eye, Search, X } from 'lucide-react';
+import type { AttendanceRecord, Branch, Employee, PayrollRun } from '../types';
+import {
+  downloadCSV,
+  formatRupiah,
+  formatTimeShort,
+  getCurrentPeriodString,
+} from '../utils/geoAndPayroll';
+
+interface HRDAnalyticsDashboardProps {
+  branches: Branch[];
+  employees: Employee[];
+  attendance: AttendanceRecord[];
+  payrollRuns: PayrollRun[];
+}
+
+export const HRDAnalyticsDashboard: React.FC<HRDAnalyticsDashboardProps> = ({
+  branches,
+  employees,
+  attendance,
+  payrollRuns,
+}) => {
+  const [selectedPeriod, setSelectedPeriod] = useState(() => getCurrentPeriodString());
+  const [selectedBranchId, setSelectedBranchId] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [previewRecord, setPreviewRecord] = useState<AttendanceRecord | null>(null);
+
+  const periodRecords = useMemo(() => {
+    return attendance
+      .filter((r) => {
+        if (!r.date.startsWith(selectedPeriod)) return false;
+        if (selectedBranchId !== 'all' && r.branchId !== selectedBranchId) return false;
+        if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+        if (
+          searchQuery.trim() &&
+          !r.employeeName.toLowerCase().includes(searchQuery.toLowerCase()) &&
+          !r.branchName.toLowerCase().includes(searchQuery.toLowerCase())
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [attendance, selectedPeriod, selectedBranchId, statusFilter, searchQuery]);
+
+  const kpis = useMemo(() => {
+    const total = periodRecords.length;
+    const onTime = periodRecords.filter((r) => r.status === 'tepat_waktu' || r.status === 'lembur').length;
+    const lateCount = periodRecords.filter((r) => r.status === 'terlambat').length;
+    const faceValid = periodRecords.filter((r) => r.faceVerified).length;
+    const totalOvertimeHours =
+      Math.round((periodRecords.reduce((acc, r) => acc + (r.overtimeMinutes || 0), 0) / 60) * 10) / 10;
+    const totalPayroll = payrollRuns
+      .filter(
+        (p) =>
+          p.period === selectedPeriod &&
+          (selectedBranchId === 'all' || p.branchId === selectedBranchId)
+      )
+      .reduce((acc, p) => acc + p.netSalary, 0);
+
+    return {
+      total,
+      punctualityRate: total > 0 ? Math.round((onTime / total) * 100) : 0,
+      lateCount,
+      faceComplianceRate: total > 0 ? Math.round((faceValid / total) * 100) : 0,
+      totalOvertimeHours,
+      totalPayroll,
+    };
+  }, [periodRecords, payrollRuns, selectedPeriod, selectedBranchId]);
+
+  const dailyTrendData = useMemo(() => {
+    const map = new Map<string, { tanggal: string; tepatWaktu: number; terlambat: number }>();
+    const sorted = [...periodRecords].sort((a, b) => a.date.localeCompare(b.date));
+    for (const r of sorted) {
+      const label = r.date.slice(5);
+      const cur = map.get(label) || { tanggal: label, tepatWaktu: 0, terlambat: 0 };
+      if (r.status === 'terlambat') cur.terlambat += 1;
+      else cur.tepatWaktu += 1;
+      map.set(label, cur);
+    }
+    return Array.from(map.values());
+  }, [periodRecords]);
+
+  const branchPerformanceData = useMemo(() => {
+    return branches.map((br) => {
+      const recs = attendance.filter(
+        (r) => r.date.startsWith(selectedPeriod) && r.branchId === br.id
+      );
+      const onTime = recs.filter((r) => r.status !== 'terlambat').length;
+      const score = recs.length > 0 ? Math.round((onTime / recs.length) * 100) : 0;
+      return {
+        cabang: br.code,
+        nama: br.name,
+        ketepatan: score,
+        hadir: recs.length,
+      };
+    });
+  }, [branches, attendance, selectedPeriod]);
+
+  // Monthly Automated Employee Summary Matrix
+  const monthlyEmployeeSummary = useMemo(() => {
+    const scopedEmployees = employees.filter(
+      (e) => selectedBranchId === 'all' || e.branchId === selectedBranchId
+    );
+    return scopedEmployees.map((emp) => {
+      const empRecs = attendance.filter(
+        (r) => r.date.startsWith(selectedPeriod) && r.employeeId === emp.id
+      );
+      const onTimeDays = empRecs.filter((r) => r.status === 'tepat_waktu' || r.status === 'lembur').length;
+      const lateDays = empRecs.filter((r) => r.status === 'terlambat').length;
+      const lateMinutes = empRecs.reduce((acc, r) => acc + (r.lateMinutes || 0), 0);
+      const overtimeHours =
+        Math.round((empRecs.reduce((acc, r) => acc + (r.overtimeMinutes || 0), 0) / 60) * 10) / 10;
+      const rate = empRecs.length > 0 ? Math.round((onTimeDays / empRecs.length) * 100) : 0;
+      const branch = branches.find((b) => b.id === emp.branchId);
+
+      return {
+        employee: emp,
+        branchName: branch?.code || emp.branchId,
+        presentDays: empRecs.length,
+        onTimeDays,
+        lateDays,
+        lateMinutes,
+        overtimeHours,
+        disciplineScore: rate,
+      };
+    });
+  }, [employees, attendance, branches, selectedPeriod, selectedBranchId]);
+
+  const handleExportMonthlyCSV = () => {
+    downloadCSV(
+      `laporan-kehadiran-bulanan-${selectedPeriod}.csv`,
+      [
+        'Kode Karyawan',
+        'Nama Lengkap',
+        'Cabang',
+        'Departemen',
+        'Hari Hadir',
+        'Tepat Waktu',
+        'Terlambat (Hari)',
+        'Total Menit Terlambat',
+        'Total Lembur (Jam)',
+        'Skor Kedisiplinan (%)',
+      ],
+      monthlyEmployeeSummary.map((row) => [
+        row.employee.employeeCode,
+        row.employee.fullName,
+        row.branchName,
+        row.employee.department,
+        row.presentDays,
+        row.onTimeDays,
+        row.lateDays,
+        row.lateMinutes,
+        row.overtimeHours,
+        row.disciplineScore,
+      ])
+    );
+  };
+
+  return (
+    <div className="space-y-6 pb-20 lg:pb-6">
+      {/* Header & Filter Controls */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p className="text-xs font-medium text-slate-500">
+            Analitik HRD & Manajemen · Sinkronisasi Multi-Cabang Real-time
+          </p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">
+            Dasbor Performa & Laporan Kehadiran
+          </h1>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            type="month"
+            aria-label="Pilih periode bulan"
+            value={selectedPeriod}
+            onChange={(e) => setSelectedPeriod(e.target.value)}
+            className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-900"
+          />
+          <select
+            aria-label="Filter cabang"
+            value={selectedBranchId}
+            onChange={(e) => setSelectedBranchId(e.target.value)}
+            className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-900"
+          >
+            <option value="all">Semua Cabang ({branches.length})</option>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.code} — {b.city}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleExportMonthlyCSV}
+            className="inline-flex min-h-[40px] items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Unduh Laporan CSV
+          </button>
+        </div>
+      </div>
+
+      {/* 4-Column KPI Summary Strip */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <p className="text-xs text-slate-500">Total Log Kehadiran ({selectedPeriod})</p>
+          <p className="mt-2 font-mono text-2xl font-bold text-slate-900 tabular-nums">
+            {kpis.total}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {employees.length} karyawan aktif terdaftar
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <p className="text-xs text-slate-500">Tingkat Ketepatan Waktu</p>
+          <p className="mt-2 font-mono text-2xl font-bold text-emerald-700 tabular-nums">
+            {kpis.punctualityRate}%
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {kpis.lateCount} catatan keterlambatan
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <p className="text-xs text-slate-500">Validasi Foto Wajah & Lembur</p>
+          <p className="mt-2 font-mono text-2xl font-bold text-slate-900 tabular-nums">
+            {kpis.faceComplianceRate}%
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Total lembur terhitung {kpis.totalOvertimeHours} jam
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <p className="text-xs text-slate-500">Estimasi Payroll Tersinkron</p>
+          <p className="mt-2 font-mono text-xl font-bold text-slate-900 tabular-nums sm:text-2xl">
+            {kpis.totalPayroll > 0 ? formatRupiah(kpis.totalPayroll) : 'Belum Disinkron'}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Sinkronisasi via modul Penggajian
+          </p>
+        </div>
+      </div>
+
+      {/* Analytics Charts */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 lg:col-span-7">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-slate-900">
+              Tren Kedisiplinan Harian ({selectedPeriod})
+            </h2>
+            <p className="text-xs text-slate-500">
+              Perbandingan kehadiran tepat waktu terhadap keterlambatan harian.
+            </p>
+          </div>
+          <div className="h-64 w-full">
+            {dailyTrendData.length === 0 ? (
+              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500">
+                Belum ada data grafik untuk periode {selectedPeriod}.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={dailyTrendData} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                  <XAxis dataKey="tanggal" tick={{ fontSize: 11, fill: '#64748b' }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: '#64748b' }} />
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: '8px',
+                      border: '1px solid #e2e8f0',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar dataKey="tepatWaktu" name="Tepat Waktu" fill="#059669" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="terlambat" name="Terlambat" fill="#d97706" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 lg:col-span-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-slate-900">
+              Performa Ketepatan Waktu per Cabang
+            </h2>
+            <p className="text-xs text-slate-500">
+              Persentase kehadiran tepat waktu lintas lokasi perusahaan.
+            </p>
+          </div>
+          <div className="h-64 w-full">
+            {branchPerformanceData.length === 0 ? (
+              <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500">
+                Belum ada cabang terdaftar.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={branchPerformanceData}
+                  layout="vertical"
+                  margin={{ top: 8, right: 16, left: 10, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+                  <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11, fill: '#64748b' }} />
+                  <YAxis dataKey="cabang" type="category" tick={{ fontSize: 11, fill: '#0f172a' }} />
+                  <Tooltip
+                    formatter={(value) => [`${value}%`, 'Ketepatan Waktu']}
+                    contentStyle={{
+                      borderRadius: '8px',
+                      border: '1px solid #e2e8f0',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar dataKey="ketepatan" fill="#0f172a" radius={[0, 4, 4, 0]} barSize={22} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* Monthly Automated Performance Summary Table */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Laporan Kehadiran Otomatis Per Bulan ({selectedPeriod})
+            </h2>
+            <p className="text-xs text-slate-500">
+              Akumulasi otomatis jam hadir, keterlambatan, dan lembur untuk transparansi kinerja & penggajian.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-slate-500">
+                <th className="py-2.5 pr-4 font-medium">Karyawan</th>
+                <th className="py-2.5 px-3 font-medium">Cabang</th>
+                <th className="py-2.5 px-3 text-right font-medium">Hari Hadir</th>
+                <th className="py-2.5 px-3 text-right font-medium">Tepat Waktu</th>
+                <th className="py-2.5 px-3 text-right font-medium">Terlambat</th>
+                <th className="py-2.5 px-3 text-right font-medium">Lembur</th>
+                <th className="py-2.5 pl-3 text-right font-medium">Skor Disiplin</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {monthlyEmployeeSummary.map((row) => (
+                <tr key={row.employee.id} className="hover:bg-slate-50">
+                  <td className="py-3 pr-4">
+                    <div className="font-medium text-slate-900">{row.employee.fullName}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {row.employee.employeeCode} · {row.employee.position}
+                    </div>
+                  </td>
+                  <td className="py-3 px-3 text-slate-700">{row.branchName}</td>
+                  <td className="py-3 px-3 text-right font-mono text-slate-900 tabular-nums">
+                    {row.presentDays} hr
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-emerald-700 tabular-nums">
+                    {row.onTimeDays} hr
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-amber-700 tabular-nums">
+                    {row.lateDays}x ({row.lateMinutes}m)
+                  </td>
+                  <td className="py-3 px-3 text-right font-mono text-slate-900 tabular-nums">
+                    {row.overtimeHours} jam
+                  </td>
+                  <td className="py-3 pl-3 text-right font-mono font-semibold text-slate-900 tabular-nums">
+                    {row.disciplineScore}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Detailed Real-time Attendance Audit Log */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">
+              Log Audit Real-time GPS & Biometrik Wajah
+            </h2>
+            <p className="text-xs text-slate-500">
+              Menampilkan jarak koordinat GPS aktual serta bukti verifikasi wajah setiap karyawan.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Cari karyawan atau cabang..."
+                className="min-h-[38px] rounded-lg border border-slate-200 pl-8 pr-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-emerald-600 focus:outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+              {[
+                { key: 'all', label: 'Semua' },
+                { key: 'tepat_waktu', label: 'Tepat Waktu' },
+                { key: 'terlambat', label: 'Terlambat' },
+                { key: 'lembur', label: 'Lembur' },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.key)}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === tab.key
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-slate-500">
+                <th className="py-2.5 pr-3 font-medium">Tanggal</th>
+                <th className="py-2.5 px-3 font-medium">Karyawan</th>
+                <th className="py-2.5 px-3 font-medium">Cabang</th>
+                <th className="py-2.5 px-3 font-medium">Masuk / Pulang</th>
+                <th className="py-2.5 px-3 text-right font-medium">Jarak GPS</th>
+                <th className="py-2.5 px-3 text-right font-medium">Wajah</th>
+                <th className="py-2.5 pl-3 text-right font-medium">Detail</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {periodRecords.map((rec) => (
+                <tr key={rec.id} className="hover:bg-slate-50">
+                  <td className="py-2.5 pr-3 font-mono text-slate-900 tabular-nums">{rec.date}</td>
+                  <td className="py-2.5 px-3 font-medium text-slate-900">{rec.employeeName}</td>
+                  <td className="py-2.5 px-3 text-slate-600">{rec.branchName}</td>
+                  <td className="py-2.5 px-3 font-mono text-slate-900 tabular-nums">
+                    {formatTimeShort(rec.clockInTime)} –{' '}
+                    {rec.clockOutTime ? formatTimeShort(rec.clockOutTime) : 'Aktif'}
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono text-slate-700 tabular-nums">
+                    {rec.clockInDistanceMeters}m
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono text-emerald-700 tabular-nums">
+                    {rec.faceVerified ? `${rec.faceConfidence}%` : 'Ditolak'}
+                  </td>
+                  <td className="py-2.5 pl-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewRecord(rec)}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-emerald-700 cursor-pointer"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      Audit
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* Audit Detail Modal */}
+      {previewRecord && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-slate-900">
+                Audit Verifikasi Kehadiran
+              </h3>
+              <button
+                type="button"
+                onClick={() => setPreviewRecord(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 cursor-pointer"
+                aria-label="Tutup audit"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-xs">
+              {previewRecord.faceThumbnail && (
+                <img
+                  src={previewRecord.faceThumbnail}
+                  alt={`Foto absen ${previewRecord.employeeName}`}
+                  referrerPolicy="no-referrer"
+                  className="h-44 w-full rounded-lg border border-slate-200 object-cover scale-x-[-1]"
+                />
+              )}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Karyawan</span>
+                  <span className="font-medium text-slate-900">{previewRecord.employeeName}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Koordinat Masuk</span>
+                  <span className="font-mono text-slate-900 tabular-nums">
+                    {previewRecord.clockInLat.toFixed(5)}, {previewRecord.clockInLng.toFixed(5)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Jarak Geofence</span>
+                  <span className="font-mono text-slate-900 tabular-nums">
+                    {previewRecord.clockInDistanceMeters} meter
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Skor Validasi Wajah</span>
+                  <span className="font-mono text-emerald-700 tabular-nums">
+                    {previewRecord.faceConfidence}%
+                  </span>
+                </div>
+                <div>
+                  <span className="block text-slate-500">SHA-256 Digest Biometrik</span>
+                  <span className="mt-0.5 block break-all font-mono text-[11px] text-slate-700">
+                    {previewRecord.faceHash}
+                  </span>
+                </div>
+                {previewRecord.notes && (
+                  <div>
+                    <span className="block text-slate-500">Catatan</span>
+                    <span className="text-slate-900">{previewRecord.notes}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

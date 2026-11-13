@@ -1,0 +1,551 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Primitive Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailId(id) {
+      return id is string && id.size() >= 5 && id.size() <= 120 && id.matches('^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSuperAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'swyzer24@gmail.com' ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'super_admin'
+        )
+      );
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'swyzer24@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidAdminRegistry(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
+        data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 100 &&
+        data.role in ['super_admin', 'hrd_admin', 'management'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminInvite(data) {
+      return data.keys().hasAll(['id', 'email', 'displayName', 'role', 'status', 'createdByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'email', 'displayName', 'role', 'status', 'claimedUid', 'createdByUid', 'createdAt', 'updatedAt']) &&
+        isValidEmailId(data.id) &&
+        data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
+        data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 100 &&
+        data.role in ['super_admin', 'hrd_admin', 'management'] &&
+        data.status in ['pending', 'claimed'] &&
+        (!('claimedUid' in data) || isValidId(data.claimedUid)) &&
+        isValidId(data.createdByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAppSettings(data) {
+      return data.keys().hasAll(['id', 'companyName', 'requireFaceVerification', 'requireGpsGeofence', 'allowEmployeeSelfService', 'lateToleranceMinutes', 'maxOvertimeHoursPerMonth', 'maintenanceMode', 'announcementBanner', 'updatedByUid', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'companyName', 'requireFaceVerification', 'requireGpsGeofence', 'allowEmployeeSelfService', 'lateToleranceMinutes', 'maxOvertimeHoursPerMonth', 'maintenanceMode', 'announcementBanner', 'updatedByUid', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.companyName is string && data.companyName.size() >= 2 && data.companyName.size() <= 100 &&
+        data.requireFaceVerification is bool &&
+        data.requireGpsGeofence is bool &&
+        data.allowEmployeeSelfService is bool &&
+        data.lateToleranceMinutes is number && data.lateToleranceMinutes >= 0 && data.lateToleranceMinutes <= 120 &&
+        data.maxOvertimeHoursPerMonth is number && data.maxOvertimeHoursPerMonth >= 1 && data.maxOvertimeHoursPerMonth <= 200 &&
+        data.maintenanceMode is bool &&
+        data.announcementBanner is string && data.announcementBanner.size() <= 240 &&
+        isValidId(data.updatedByUid) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidBranch(data) {
+      return data.keys().hasAll(['id', 'name', 'code', 'city', 'address', 'latitude', 'longitude', 'radiusMeters', 'shiftStart', 'shiftEnd', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'name', 'code', 'city', 'address', 'latitude', 'longitude', 'radiusMeters', 'shiftStart', 'shiftEnd', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+        data.code is string && data.code.size() >= 2 && data.code.size() <= 24 && data.code.matches('^[A-Z0-9_\\-]+$') &&
+        data.city is string && data.city.size() >= 2 && data.city.size() <= 64 &&
+        data.address is string && data.address.size() >= 5 && data.address.size() <= 240 &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.radiusMeters is number && data.radiusMeters >= 20 && data.radiusMeters <= 5000 &&
+        data.shiftStart is string && data.shiftStart.size() == 5 && data.shiftStart.matches('^\\d{2}:\\d{2}$') &&
+        data.shiftEnd is string && data.shiftEnd.size() == 5 && data.shiftEnd.matches('^\\d{2}:\\d{2}$') &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['id', 'uid', 'employeeCode', 'fullName', 'department', 'position', 'branchId', 'ptkpStatus', 'baseSalary', 'dailyAllowance', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'uid', 'email', 'employeeCode', 'fullName', 'department', 'position', 'branchId', 'ptkpStatus', 'baseSalary', 'dailyAllowance', 'avatarUrl', 'status', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.uid) &&
+        (!('email' in data) || (data.email is string && data.email.size() >= 5 && data.email.size() <= 120)) &&
+        data.employeeCode is string && data.employeeCode.size() >= 3 && data.employeeCode.size() <= 32 && data.employeeCode.matches('^[A-Z0-9_\\-]+$') &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100 &&
+        data.department is string && data.department.size() >= 2 && data.department.size() <= 64 &&
+        data.position is string && data.position.size() >= 2 && data.position.size() <= 64 &&
+        isValidId(data.branchId) &&
+        data.ptkpStatus in ['TK/0', 'TK/1', 'K/0', 'K/1', 'K/2', 'K/3'] &&
+        data.baseSalary is number && data.baseSalary >= 0 && data.baseSalary <= 1000000000 &&
+        data.dailyAllowance is number && data.dailyAllowance >= 0 && data.dailyAllowance <= 50000000 &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 512)) &&
+        data.status in ['aktif', 'cuti', 'nonaktif'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidEmployeePrivatePII(data) {
+      return data.keys().hasAll(['ownerUid', 'algorithm', 'ciphertext', 'iv', 'keyFingerprint', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerUid', 'algorithm', 'ciphertext', 'iv', 'keyFingerprint', 'updatedAt']) &&
+        isValidId(data.ownerUid) &&
+        data.algorithm == 'AES-256-GCM' &&
+        data.ciphertext is string && data.ciphertext.size() >= 8 && data.ciphertext.size() <= 8192 &&
+        data.iv is string && data.iv.size() >= 8 && data.iv.size() <= 128 &&
+        data.keyFingerprint is string && data.keyFingerprint.size() >= 6 && data.keyFingerprint.size() <= 64 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'branchName', 'date', 'clockInTime', 'clockInLat', 'clockInLng', 'clockInDistanceMeters', 'faceVerified', 'faceConfidence', 'faceHash', 'status', 'lateMinutes', 'overtimeMinutes', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'branchName', 'date', 'clockInTime', 'clockOutTime', 'clockInLat', 'clockInLng', 'clockInDistanceMeters', 'clockOutLat', 'clockOutLng', 'clockOutDistanceMeters', 'faceVerified', 'faceConfidence', 'faceHash', 'faceThumbnail', 'status', 'lateMinutes', 'overtimeMinutes', 'notes', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.employeeId) &&
+        data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
+        isValidId(data.branchId) &&
+        data.branchName is string && data.branchName.size() >= 2 && data.branchName.size() <= 100 &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.clockInTime is string && data.clockInTime.size() >= 10 && data.clockInTime.size() <= 40 &&
+        (!('clockOutTime' in data) || (data.clockOutTime is string && data.clockOutTime.size() <= 40)) &&
+        data.clockInLat is number && data.clockInLat >= -90 && data.clockInLat <= 90 &&
+        data.clockInLng is number && data.clockInLng >= -180 && data.clockInLng <= 180 &&
+        data.clockInDistanceMeters is number && data.clockInDistanceMeters >= 0 && data.clockInDistanceMeters <= 5000000 &&
+        (!('clockOutLat' in data) || (data.clockOutLat is number && data.clockOutLat >= -90 && data.clockOutLat <= 90)) &&
+        (!('clockOutLng' in data) || (data.clockOutLng is number && data.clockOutLng >= -180 && data.clockOutLng <= 180)) &&
+        (!('clockOutDistanceMeters' in data) || (data.clockOutDistanceMeters is number && data.clockOutDistanceMeters >= 0 && data.clockOutDistanceMeters <= 5000000)) &&
+        data.faceVerified is bool &&
+        data.faceConfidence is number && data.faceConfidence >= 0 && data.faceConfidence <= 100 &&
+        data.faceHash is string && data.faceHash.size() >= 16 && data.faceHash.size() <= 128 &&
+        (!('faceThumbnail' in data) || (data.faceThumbnail is string && data.faceThumbnail.size() <= 65000)) &&
+        data.status in ['tepat_waktu', 'terlambat', 'lembur', 'izin'] &&
+        data.lateMinutes is number && data.lateMinutes >= 0 && data.lateMinutes <= 1440 &&
+        data.overtimeMinutes is number && data.overtimeMinutes >= 0 && data.overtimeMinutes <= 1440 &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 240)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLeaveRequest(data) {
+      return data.keys().hasAll(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'leaveType', 'startDate', 'endDate', 'totalDays', 'reason', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'leaveType', 'startDate', 'endDate', 'totalDays', 'reason', 'status', 'reviewedByName', 'reviewNotes', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.employeeId) &&
+        data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
+        isValidId(data.branchId) &&
+        data.leaveType in ['izin_sakit', 'izin_pribadi', 'cuti_tahunan', 'dinas_luar'] &&
+        data.startDate is string && data.startDate.size() == 10 && data.startDate.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.endDate is string && data.endDate.size() == 10 && data.endDate.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.totalDays is number && data.totalDays >= 1 && data.totalDays <= 90 &&
+        data.reason is string && data.reason.size() >= 4 && data.reason.size() <= 300 &&
+        data.status in ['menunggu', 'disetujui', 'ditolak'] &&
+        (!('reviewedByName' in data) || (data.reviewedByName is string && data.reviewedByName.size() <= 100)) &&
+        (!('reviewNotes' in data) || (data.reviewNotes is string && data.reviewNotes.size() <= 240)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOvertimeRequest(data) {
+      return data.keys().hasAll(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'date', 'startTime', 'endTime', 'durationHours', 'reason', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'employeeId', 'employeeName', 'branchId', 'date', 'startTime', 'endTime', 'durationHours', 'reason', 'status', 'reviewedByName', 'reviewNotes', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.employeeId) &&
+        data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
+        isValidId(data.branchId) &&
+        data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$') &&
+        data.startTime is string && data.startTime.size() == 5 && data.startTime.matches('^\\d{2}:\\d{2}$') &&
+        data.endTime is string && data.endTime.size() == 5 && data.endTime.matches('^\\d{2}:\\d{2}$') &&
+        data.durationHours is number && data.durationHours >= 0.5 && data.durationHours <= 16 &&
+        data.reason is string && data.reason.size() >= 4 && data.reason.size() <= 300 &&
+        data.status in ['menunggu', 'disetujui', 'ditolak'] &&
+        (!('reviewedByName' in data) || (data.reviewedByName is string && data.reviewedByName.size() <= 100)) &&
+        (!('reviewNotes' in data) || (data.reviewNotes is string && data.reviewNotes.size() <= 240)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPayrollRun(data) {
+      return data.keys().hasAll(['id', 'period', 'employeeId', 'employeeName', 'userId', 'branchId', 'presentDays', 'lateMinutesTotal', 'overtimeHours', 'baseSalary', 'allowances', 'overtimePay', 'lateDeduction', 'bpjsDeduction', 'grossIncome', 'pph21Rate', 'pph21Amount', 'netSalary', 'status', 'taxReported', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'period', 'employeeId', 'employeeName', 'userId', 'branchId', 'presentDays', 'lateMinutesTotal', 'overtimeHours', 'baseSalary', 'allowances', 'overtimePay', 'lateDeduction', 'bpjsDeduction', 'grossIncome', 'pph21Rate', 'pph21Amount', 'netSalary', 'status', 'taxReported', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.period is string && data.period.size() == 7 && data.period.matches('^\\d{4}-\\d{2}$') &&
+        isValidId(data.employeeId) &&
+        data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
+        isValidId(data.userId) &&
+        isValidId(data.branchId) &&
+        data.presentDays is number && data.presentDays >= 0 && data.presentDays <= 31 &&
+        data.lateMinutesTotal is number && data.lateMinutesTotal >= 0 && data.lateMinutesTotal <= 20000 &&
+        data.overtimeHours is number && data.overtimeHours >= 0 && data.overtimeHours <= 300 &&
+        data.baseSalary is number && data.baseSalary >= 0 &&
+        data.allowances is number && data.allowances >= 0 &&
+        data.overtimePay is number && data.overtimePay >= 0 &&
+        data.lateDeduction is number && data.lateDeduction >= 0 &&
+        data.bpjsDeduction is number && data.bpjsDeduction >= 0 &&
+        data.grossIncome is number && data.grossIncome >= 0 &&
+        data.pph21Rate is number && data.pph21Rate >= 0 && data.pph21Rate <= 50 &&
+        data.pph21Amount is number && data.pph21Amount >= 0 &&
+        data.netSalary is number && data.netSalary >= 0 &&
+        data.status in ['draft', 'disetujui', 'dibayarkan'] &&
+        data.taxReported is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTaxFiling(data) {
+      return data.keys().hasAll(['id', 'period', 'branchId', 'provider', 'totalEmployees', 'totalGrossIncome', 'totalPph21', 'receiptNumber', 'payloadSignature', 'status', 'syncedByUid', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'period', 'branchId', 'provider', 'totalEmployees', 'totalGrossIncome', 'totalPph21', 'receiptNumber', 'payloadSignature', 'status', 'syncedByUid', 'createdAt']) &&
+        isValidId(data.id) &&
+        data.period is string && data.period.size() == 7 && data.period.matches('^\\d{4}-\\d{2}$') &&
+        isValidId(data.branchId) &&
+        data.provider is string && data.provider.size() >= 2 && data.provider.size() <= 64 &&
+        data.totalEmployees is number && data.totalEmployees >= 0 &&
+        data.totalGrossIncome is number && data.totalGrossIncome >= 0 &&
+        data.totalPph21 is number && data.totalPph21 >= 0 &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 4 && data.receiptNumber.size() <= 64 &&
+        data.payloadSignature is string && data.payloadSignature.size() >= 16 && data.payloadSignature.size() <= 128 &&
+        data.status in ['terkirim', 'tervalidasi', 'gagal'] &&
+        isValidId(data.syncedByUid) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidSchedule(data) {
+      return data.keys().hasAll(['id', 'userId', 'branchId', 'shiftStart', 'shiftEnd', 'remindBeforeMinutes', 'browserNotifyEnabled', 'soundEnabled', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'branchId', 'shiftStart', 'shiftEnd', 'remindBeforeMinutes', 'browserNotifyEnabled', 'soundEnabled', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        isValidId(data.branchId) &&
+        data.shiftStart is string && data.shiftStart.size() == 5 && data.shiftStart.matches('^\\d{2}:\\d{2}$') &&
+        data.shiftEnd is string && data.shiftEnd.size() == 5 && data.shiftEnd.matches('^\\d{2}:\\d{2}$') &&
+        data.remindBeforeMinutes is number && data.remindBeforeMinutes >= 1 && data.remindBeforeMinutes <= 120 &&
+        data.browserNotifyEnabled is bool &&
+        data.soundEnabled is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isAdmin() || (isVerifiedUser() && adminId == request.auth.uid));
+      allow list: if isAdmin();
+      allow create: if isValidId(adminId) && isValidAdminRegistry(incoming()) &&
+        incoming().createdAt == request.time && (
+          (isSuperAdmin() && incoming().uid == adminId) ||
+          (
+            isVerifiedUser() &&
+            adminId == request.auth.uid &&
+            incoming().uid == request.auth.uid &&
+            incoming().email.lower() == request.auth.token.email.lower() &&
+            exists(/databases/$(database)/documents/adminInvites/$(request.auth.token.email.lower())) &&
+            get(/databases/$(database)/documents/adminInvites/$(request.auth.token.email.lower())).data.role == incoming().role
+          )
+        );
+      allow update: if isSuperAdmin() && isValidId(adminId) && isValidAdminRegistry(incoming()) &&
+        incoming().uid == existing().uid && incoming().createdAt == existing().createdAt;
+      allow delete: if isSuperAdmin() && isValidId(adminId);
+    }
+
+    match /adminInvites/{inviteEmail} {
+      allow get: if isValidEmailId(inviteEmail) && (isAdmin() || (isVerifiedUser() && inviteEmail == request.auth.token.email.lower()));
+      allow list: if isAdmin();
+      allow create: if isSuperAdmin() && isValidEmailId(inviteEmail) && isValidAdminInvite(incoming()) &&
+        incoming().id == inviteEmail &&
+        incoming().email == inviteEmail &&
+        incoming().status == 'pending' &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidEmailId(inviteEmail) && isValidAdminInvite(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().email == existing().email &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isSuperAdmin() || (
+            isVerifiedUser() &&
+            existing().email.lower() == request.auth.token.email.lower() &&
+            existing().status == 'pending' &&
+            incoming().status == 'claimed' &&
+            incoming().claimedUid == request.auth.uid &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'claimedUid', 'updatedAt'])
+          )
+        );
+      allow delete: if isSuperAdmin() && isValidEmailId(inviteEmail);
+    }
+
+    match /appSettings/{settingId} {
+      allow get: if isVerifiedUser() && isValidId(settingId);
+      allow list: if isVerifiedUser();
+      allow create: if isAdmin() && isValidId(settingId) && isValidAppSettings(incoming()) &&
+        incoming().id == settingId &&
+        incoming().updatedByUid == request.auth.uid &&
+        incoming().updatedAt == request.time &&
+        (isSuperAdmin() || incoming().maintenanceMode == false);
+      allow update: if isAdmin() && isValidId(settingId) && isValidAppSettings(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().updatedByUid == request.auth.uid &&
+        incoming().updatedAt == request.time &&
+        (isSuperAdmin() || incoming().maintenanceMode == existing().maintenanceMode);
+      allow delete: if isSuperAdmin() && isValidId(settingId);
+    }
+
+    match /branches/{branchId} {
+      allow get: if isVerifiedUser() && isValidId(branchId);
+      allow list: if isVerifiedUser();
+      allow create: if isAdmin() && isValidId(branchId) && isValidBranch(incoming()) &&
+        incoming().id == branchId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() && isValidId(branchId) && isValidBranch(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(branchId);
+    }
+
+    match /employees/{employeeId} {
+      allow get: if isValidId(employeeId) && (
+        isAdmin() ||
+        (isVerifiedUser() && (
+          resource.data.uid == request.auth.uid ||
+          ('email' in resource.data && resource.data.email.lower() == request.auth.token.email.lower())
+        ))
+      );
+      allow list: if isAdmin() || (
+        isVerifiedUser() && (
+          resource.data.uid == request.auth.uid ||
+          ('email' in resource.data && resource.data.email.lower() == request.auth.token.email.lower())
+        )
+      );
+      allow create: if isAdmin() && isValidId(employeeId) && isValidEmployee(incoming()) &&
+        'email' in incoming() &&
+        incoming().id == employeeId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/branches/$(incoming().branchId));
+      allow update: if isVerifiedUser() && isValidId(employeeId) && isValidEmployee(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            'email' in existing() &&
+            existing().email.lower() == request.auth.token.email.lower() &&
+            existing().status == 'aktif' &&
+            incoming().uid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'avatarUrl', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(employeeId);
+
+      match /private/pii {
+        allow get: if isValidId(employeeId) && (
+          isAdmin() ||
+          (isVerifiedUser() && (
+            resource.data.ownerUid == request.auth.uid ||
+            get(/databases/$(database)/documents/employees/$(employeeId)).data.uid == request.auth.uid
+          ))
+        );
+        allow list: if false;
+        allow create: if isVerifiedUser() && isValidId(employeeId) && isValidEmployeePrivatePII(incoming()) &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/employees/$(employeeId)) && (
+            isAdmin() || (
+              incoming().ownerUid == request.auth.uid &&
+              get(/databases/$(database)/documents/employees/$(employeeId)).data.uid == request.auth.uid
+            )
+          );
+        allow update: if isVerifiedUser() && isValidId(employeeId) && isValidEmployeePrivatePII(incoming()) &&
+          incoming().updatedAt == request.time && (
+            (isAdmin() && incoming().ownerUid == existing().ownerUid) || (
+              incoming().ownerUid == request.auth.uid &&
+              get(/databases/$(database)/documents/employees/$(employeeId)).data.uid == request.auth.uid
+            )
+          );
+        allow delete: if isAdmin() && isValidId(employeeId);
+      }
+    }
+
+    match /attendance/{attendanceId} {
+      allow get: if isValidId(attendanceId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(attendanceId) && isValidAttendance(incoming()) &&
+        incoming().id == attendanceId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/branches/$(incoming().branchId)) &&
+        exists(/databases/$(database)/documents/employees/$(incoming().employeeId)) && (
+          isAdmin() || (
+            incoming().userId == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.uid == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.status == 'aktif'
+          )
+        );
+      allow update: if isVerifiedUser() && isValidId(attendanceId) && isValidAttendance(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().employeeId == existing().employeeId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            existing().userId == request.auth.uid &&
+            (!('clockOutTime' in existing()) || existing().clockOutTime == '') &&
+            ('clockOutTime' in incoming()) && incoming().clockOutTime.size() >= 10 &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['clockOutTime', 'clockOutLat', 'clockOutLng', 'clockOutDistanceMeters', 'overtimeMinutes', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(attendanceId);
+    }
+
+    match /leaveRequests/{requestId} {
+      allow get: if isValidId(requestId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(requestId) && isValidLeaveRequest(incoming()) &&
+        incoming().id == requestId &&
+        incoming().status == 'menunggu' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/branches/$(incoming().branchId)) &&
+        exists(/databases/$(database)/documents/employees/$(incoming().employeeId)) && (
+          isAdmin() || (
+            incoming().userId == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.uid == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.status == 'aktif'
+          )
+        );
+      allow update: if isAdmin() && isValidId(requestId) && isValidLeaveRequest(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().employeeId == existing().employeeId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().status == 'menunggu' || isSuperAdmin());
+      allow delete: if isValidId(requestId) && (
+        isAdmin() ||
+        (isVerifiedUser() && existing().userId == request.auth.uid && existing().status == 'menunggu')
+      );
+    }
+
+    match /overtimeRequests/{requestId} {
+      allow get: if isValidId(requestId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(requestId) && isValidOvertimeRequest(incoming()) &&
+        incoming().id == requestId &&
+        incoming().status == 'menunggu' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/branches/$(incoming().branchId)) &&
+        exists(/databases/$(database)/documents/employees/$(incoming().employeeId)) && (
+          isAdmin() || (
+            incoming().userId == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.uid == request.auth.uid &&
+            get(/databases/$(database)/documents/employees/$(incoming().employeeId)).data.status == 'aktif'
+          )
+        );
+      allow update: if isAdmin() && isValidId(requestId) && isValidOvertimeRequest(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().employeeId == existing().employeeId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().status == 'menunggu' || isSuperAdmin());
+      allow delete: if isValidId(requestId) && (
+        isAdmin() ||
+        (isVerifiedUser() && existing().userId == request.auth.uid && existing().status == 'menunggu')
+      );
+    }
+
+    match /payrollRuns/{payrollId} {
+      allow get: if isValidId(payrollId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isAdmin() && isValidId(payrollId) && isValidPayrollRun(incoming()) &&
+        incoming().id == payrollId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/employees/$(incoming().employeeId));
+      allow update: if isAdmin() && isValidId(payrollId) && isValidPayrollRun(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().employeeId == existing().employeeId &&
+        incoming().userId == existing().userId &&
+        incoming().period == existing().period &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (existing().status != 'dibayarkan' || incoming().diff(existing()).affectedKeys().hasOnly(['taxReported', 'updatedAt']));
+      allow delete: if isAdmin() && isValidId(payrollId);
+    }
+
+    match /taxFilings/{filingId} {
+      allow get: if isAdmin() && isValidId(filingId);
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(filingId) && isValidTaxFiling(incoming()) &&
+        incoming().id == filingId &&
+        incoming().syncedByUid == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(filingId);
+    }
+
+    match /schedules/{scheduleId} {
+      allow get: if isValidId(scheduleId) && (isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid));
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.userId == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(scheduleId) && isValidSchedule(incoming()) &&
+        incoming().id == scheduleId &&
+        (isAdmin() || incoming().userId == request.auth.uid) &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(scheduleId) && isValidSchedule(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() || (
+            existing().userId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['branchId', 'shiftStart', 'shiftEnd', 'remindBeforeMinutes', 'browserNotifyEnabled', 'soundEnabled', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(scheduleId);
+    }
+  }
+}
